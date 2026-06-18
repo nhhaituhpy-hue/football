@@ -34,7 +34,11 @@ const USER_AGENTS = [
 
 const worker = {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(refreshLiveCache(env, ctx));
+    if (event.cron === "0 */6 * * *") {
+      ctx.waitUntil(syncWc2026Schedule(env));
+    } else {
+      ctx.waitUntil(refreshLiveCache(env, ctx));
+    }
   },
 
   async fetch(request, env, ctx) {
@@ -42,6 +46,11 @@ const worker = {
 
     const url = new URL(request.url);
     try {
+      if (url.pathname === '/sync-schedule') {
+        await syncWc2026Schedule(env);
+        return json({ status: 'success', message: 'Schedule and teams synced successfully' });
+      }
+
       if (url.pathname === '/live') {
         const data = await getLive(env, ctx);
         return json(data);
@@ -276,6 +285,11 @@ function parseEventsHtml(html, matchId) {
     const titleMatch = blockContent.match(/<title>([^<]*)<\/title>/);
     let eventTypeRaw = titleMatch ? titleMatch[1].toLowerCase().trim() : 'other';
 
+    // Skip player substitutions entirely
+    if (eventTypeRaw.includes('substitution') || eventTypeRaw.includes('thay người')) {
+      continue;
+    }
+
     let eventType = 'other';
     if (eventTypeRaw.includes('goal')) {
       eventType = 'goal';
@@ -283,8 +297,6 @@ function parseEventsHtml(html, matchId) {
       eventType = 'card_yellow';
     } else if (eventTypeRaw.includes('red card') || eventTypeRaw.includes('thẻ đỏ')) {
       eventType = 'card_red';
-    } else if (eventTypeRaw.includes('substitution') || eventTypeRaw.includes('thay người')) {
-      eventType = 'substitution';
     } else if (eventTypeRaw.includes('var')) {
       eventType = 'var';
     }
@@ -658,4 +670,230 @@ async function getStandings(env) {
       Object.values(rows).sort((a, b) => b.points - a.points || b.gd - a.gd || b.gf - a.gf),
     ]),
   );
+}
+
+// --- WC2026 Schedule Sync Logic ---
+
+const ROUND_LABELS = {
+  group: 'Vòng bảng',
+  R32: 'Vòng 32 đội',
+  R16: 'Vòng 16 đội',
+  QF: 'Tứ kết',
+  SF: 'Bán kết',
+  '3rd': 'Tranh hạng ba',
+  final: 'Chung kết',
+};
+
+const TEAM_VI = {
+  ALG: 'Algeria',
+  ARG: 'Argentina',
+  AUS: 'Úc',
+  AUT: 'Áo',
+  BEL: 'Bỉ',
+  BIH: 'Bosnia-Herzegovina',
+  BRA: 'Brazil',
+  CAN: 'Canada',
+  CIV: 'Bờ Biển Ngà',
+  COD: 'Congo DR',
+  COL: 'Colombia',
+  CPV: 'Cabo Verde',
+  CRO: 'Croatia',
+  CUW: 'Curaçao',
+  CZE: 'Czechia',
+  ECU: 'Ecuador',
+  EGY: 'Ai Cập',
+  ENG: 'Anh',
+  ESP: 'Tây Ban Nha',
+  FRA: 'Pháp',
+  GER: 'Đức',
+  GHA: 'Ghana',
+  HAI: 'Haiti',
+  IRN: 'Iran',
+  IRQ: 'Iraq',
+  JOR: 'Jordan',
+  JPN: 'Nhật Bản',
+  KOR: 'Hàn Quốc',
+  KSA: 'Ả Rập Saudi',
+  MAR: 'Ma Rốc',
+  MEX: 'Mexico',
+  NED: 'Hà Lan',
+  NOR: 'Na Uy',
+  NZL: 'New Zealand',
+  PAN: 'Panama',
+  PAR: 'Paraguay',
+  POR: 'Bồ Đào Nha',
+  QAT: 'Qatar',
+  RSA: 'Nam Phi',
+  SCO: 'Scotland',
+  SEN: 'Senegal',
+  SUI: 'Thụy Sĩ',
+  SWE: 'Thụy Điển',
+  TUN: 'Tunisia',
+  TUR: 'Thổ Nhĩ Kỳ',
+  URU: 'Uruguay',
+  USA: 'Mỹ',
+  UZB: 'Uzbekistan',
+};
+
+const FLAG_CODES = {
+  ALG: 'dz',
+  ARG: 'ar',
+  AUS: 'au',
+  AUT: 'at',
+  BEL: 'be',
+  BIH: 'ba',
+  BRA: 'br',
+  CAN: 'ca',
+  CIV: 'ci',
+  COD: 'cd',
+  COL: 'co',
+  CPV: 'cv',
+  CRO: 'hr',
+  CUW: 'cw',
+  CZE: 'cz',
+  ECU: 'ec',
+  EGY: 'eg',
+  ENG: 'gb-eng',
+  ESP: 'es',
+  FRA: 'fr',
+  GER: 'de',
+  GHA: 'gh',
+  HAI: 'ht',
+  IRN: 'ir',
+  IRQ: 'iq',
+  JOR: 'jo',
+  JPN: 'jp',
+  KOR: 'kr',
+  KSA: 'sa',
+  MAR: 'ma',
+  MEX: 'mx',
+  NED: 'nl',
+  NOR: 'no',
+  NZL: 'nz',
+  PAN: 'pa',
+  PAR: 'py',
+  POR: 'pt',
+  QAT: 'qa',
+  RSA: 'za',
+  SCO: 'gb-sct',
+  SEN: 'sn',
+  SUI: 'ch',
+  SWE: 'se',
+  TUN: 'tn',
+  TUR: 'tr',
+  URU: 'uy',
+  USA: 'us',
+  UZB: 'uz',
+};
+
+function normalizeApiStatus(status, phase) {
+  if (status === 'completed' || phase === 'FT' || phase === 'FT_PEN') return 'finished';
+  if (status === 'live' || status === 'in_progress') return 'live';
+  if (status === 'postponed') return 'postponed';
+  if (status === 'cancelled') return 'cancelled';
+  return 'scheduled';
+}
+
+function mapApiTeam(team) {
+  const flagCode = FLAG_CODES[team.code];
+  return {
+    id: team.id,
+    code: team.code,
+    name_en: team.name,
+    name_vi: TEAM_VI[team.code] || team.name,
+    group_name: team.group_name,
+    flag_url: team.flag_url || (flagCode ? `https://flagcdn.com/w160/${flagCode}.png` : null),
+    source_payload: team,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function mapApiMatch(match) {
+  return {
+    id: match.id,
+    match_number: match.match_number,
+    round_code: match.round,
+    round_name: ROUND_LABELS[match.round] || match.round,
+    group_name: match.group_name,
+    home_team_id: match.home_team_id,
+    away_team_id: match.away_team_id,
+    home_team_name: match.home_team,
+    away_team_name: match.away_team,
+    home_team_code: match.home_team_code,
+    away_team_code: match.away_team_code,
+    stadium_id: match.stadium_id,
+    stadium_name: match.stadium,
+    stadium_city: match.stadium_city,
+    stadium_country: match.stadium_country,
+    kickoff_utc: match.kickoff_utc,
+    status: normalizeApiStatus(match.status, match.phase),
+    phase: match.phase,
+    home_score: match.home_score,
+    away_score: match.away_score,
+    home_pen: match.home_pen,
+    away_pen: match.away_pen,
+    source_payload: match,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function upsertSupabaseRows(env, path, payload) {
+  const supabaseUrl = env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !supabaseKey) {
+    throw new Error('Missing Supabase Worker environment variables');
+  }
+
+  const response = await fetch(`${supabaseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseKey,
+      Authorization: `Bearer ${supabaseKey}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=merge-duplicates'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase upsert returned HTTP ${response.status}: ${await response.text()}`);
+  }
+}
+
+async function syncWc2026Schedule(env) {
+  console.log('Starting scheduled schedule sync from wc2026api...');
+  try {
+    const baseUrl = env.WC2026_API_BASE_URL || 'https://api.wc2026api.com';
+    const apiKey = env.WC2026_API_KEY;
+    if (!apiKey) {
+      throw new Error('Missing WC2026_API_KEY in worker environment');
+    }
+
+    // Fetch teams and matches in parallel
+    const [teamsRes, matchesRes] = await Promise.all([
+      fetch(`${baseUrl}/teams`, { headers: { Authorization: `Bearer ${apiKey}` } }),
+      fetch(`${baseUrl}/matches`, { headers: { Authorization: `Bearer ${apiKey}` } })
+    ]);
+
+    if (!teamsRes.ok || !matchesRes.ok) {
+      throw new Error(`Failed to fetch from WC2026 API. Teams status: ${teamsRes.status}, Matches status: ${matchesRes.status}`);
+    }
+
+    const rawTeams = await teamsRes.json();
+    const rawMatches = await matchesRes.json();
+
+    console.log(`Fetched ${rawTeams.length} teams and ${rawMatches.length} matches from API`);
+
+    const mappedTeams = rawTeams.map(mapApiTeam);
+    const mappedMatches = rawMatches.map(mapApiMatch);
+
+    // Upsert teams and matches
+    await upsertSupabaseRows(env, '/rest/v1/wc2026_teams', mappedTeams);
+    await upsertSupabaseRows(env, '/rest/v1/wc2026_matches', mappedMatches);
+
+    console.log('Successfully completed schedule sync from wc2026api');
+  } catch (error) {
+    console.error('Error during scheduled schedule sync:', error.message);
+    throw error;
+  }
 }

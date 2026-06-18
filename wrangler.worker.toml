@@ -3,7 +3,7 @@ main = "scripts/cloudflare_worker.js"
 compatibility_date = "2026-05-25"
 
 [triggers]
-crons = ["* * * * *"]
+crons = ["* * * * *", "0 */6 * * *"]
 
 [vars]
 THETHAO247_LIVE_URL = "https://thethao247.vn/livescores/"

@@ -59,9 +59,9 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
     }
   };
 
-  // Lọc sự kiện bàn thắng và thẻ đỏ
-  const homeEvents = events.filter(e => e.is_home_team);
-  const awayEvents = events.filter(e => !e.is_home_team);
+  // Lọc sự kiện bàn thắng và thẻ đỏ, bỏ qua thay người (substitution)
+  const homeEvents = events.filter(e => e.is_home_team && e.event_type !== 'substitution');
+  const awayEvents = events.filter(e => !e.is_home_team && e.event_type !== 'substitution');
 
   // Render danh sách sự kiện cầu thủ
   const renderEventsList = (teamEvents: MatchEvent[]) => {
