@@ -1,26 +1,125 @@
 @import "tailwindcss";
+@variant dark (&:where(.dark, .dark *));
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f3f3f3;
+  --foreground: #1c1c1c;
+  --card-bg: rgba(255, 255, 255, 0.75);
+  --card-border: rgba(0, 0, 0, 0.08);
+  --mica-bg: rgba(243, 243, 243, 0.85);
+  --accent: #0078d4; /* Windows 11 Blue */
+  --accent-hover: #006cbe;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-card-bg: var(--card-bg);
+  --color-card-border: var(--card-border);
+  --color-mica-bg: var(--mica-bg);
+  --color-accent-win: var(--accent);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+.dark {
+  --background: #09090c;
+  --foreground: #f3f3f5;
+  --card-bg: rgba(20, 20, 26, 0.65);
+  --card-border: rgba(255, 255, 255, 0.08);
+  --mica-bg: rgba(13, 13, 17, 0.85);
+  --accent: #60cdff; /* Windows 11 Dark Blue Accent */
+  --accent-hover: #4cc3ff;
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-image: radial-gradient(at 0% 0%, rgba(30, 41, 59, 0.12) 0, transparent 40%),
+                    radial-gradient(at 100% 0%, rgba(0, 120, 212, 0.04) 0, transparent 40%);
+  background-attachment: fixed;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.dark body {
+  background-image: radial-gradient(at 0% 0%, rgba(15, 23, 42, 0.4) 0, transparent 40%),
+                    radial-gradient(at 100% 0%, rgba(96, 205, 255, 0.03) 0, transparent 40%);
+}
+
+/* Windows 11 Style Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 120, 120, 0.25);
+  border-radius: 4px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 120, 120, 0.4);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Fluent Design utilities */
+.fluent-acrylic {
+  backdrop-filter: blur(20px) saturate(125%);
+  background-color: var(--card-bg);
+  border: 1px solid var(--card-border);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.02);
+}
+
+.fluent-mica {
+  backdrop-filter: blur(30px) saturate(150%);
+  background-color: var(--mica-bg);
+  border: 1px solid var(--card-border);
+}
+
+.fluent-card-hover {
+  transition: background-color 0.25s cubic-bezier(0.1, 0.9, 0.2, 1),
+              border-color 0.25s cubic-bezier(0.1, 0.9, 0.2, 1),
+              transform 0.25s cubic-bezier(0.1, 0.9, 0.2, 1);
+}
+
+.fluent-card-hover:hover {
+  background-color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(0, 120, 212, 0.25);
+  transform: translateY(-1px);
+}
+
+.dark .fluent-card-hover:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+  border-color: rgba(96, 205, 255, 0.25);
+}
+
+/* Live indicators */
+@keyframes live-pulse {
+  0% {
+    transform: scale(0.92);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+  100% {
+    transform: scale(0.92);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+.live-indicator-pulse {
+  animation: live-pulse 2s infinite;
 }

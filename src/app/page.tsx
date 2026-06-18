@@ -1,65 +1,292 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import React, { useEffect, useState } from 'react';
+import { Match, StandingRow } from '../types';
+import { fetchMatches, subscribeMatches, fetchTeams, calculateStandings } from '../lib/dataManager';
+import { playGoalSound } from '../lib/sound';
+import MatchCard from '../components/MatchCard';
+import { 
+  SoccerBall, 
+  CalendarBlank, 
+  Info
+} from '@phosphor-icons/react';
+
+function getUniqueDates(allMatches: Match[]) {
+  const datesYMD = allMatches.map(m => {
+    const date = new Date(m.match_time);
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    const parts = formatter.formatToParts(date);
+    const year = parts.find(p => p.type === 'year')?.value;
+    const month = parts.find(p => p.type === 'month')?.value;
+    const day = parts.find(p => p.type === 'day')?.value;
+    return `${year}-${month}-${day}`;
+  });
+  
+  return Array.from(new Set(datesYMD)).sort();
+}
+
+export default function DashboardPage() {
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedDate, setSelectedDate] = useState<string>('');
+  const [hasSetDefaultDate, setHasSetDefaultDate] = useState(false);
+  const [standings, setStandings] = useState<Record<string, StandingRow[]>>({});
+
+  const activeDateRef = React.useRef<HTMLButtonElement | null>(null);
+  const prevMatchesRef = React.useRef<Match[]>([]);
+
+  // Tự động cuộn ngày được chọn vào giữa thanh cuộn
+  useEffect(() => {
+    if (!loading && activeDateRef.current) {
+      const timer = setTimeout(() => {
+        activeDateRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest',
+          inline: 'center'
+        });
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedDate, loading]);
+
+  // Load và subscribe realtime dữ liệu
+  useEffect(() => {
+    let active = true;
+
+    async function loadData() {
+      try {
+        const [data, teams] = await Promise.all([fetchMatches(), fetchTeams()]);
+        if (active) {
+          // So sánh tỉ số cũ và mới để phát âm thanh báo bàn thắng
+          if (prevMatchesRef.current.length > 0) {
+            let scoreChanged = false;
+            data.forEach((match) => {
+              const prevMatch = prevMatchesRef.current.find(m => m.id === match.id);
+              if (prevMatch && prevMatch.result && match.result) {
+                const isLive = match.result.status === 'live';
+                const homeIncreased = match.result.home_score > prevMatch.result.home_score;
+                const awayIncreased = match.result.away_score > prevMatch.result.away_score;
+                if (isLive && (homeIncreased || awayIncreased)) {
+                  scoreChanged = true;
+                }
+              }
+            });
+
+            if (scoreChanged) {
+              playGoalSound();
+            }
+          }
+          prevMatchesRef.current = data;
+
+          setMatches(data);
+          
+          const currentStandings = calculateStandings(data, teams);
+          setStandings(currentStandings);
+          
+          // Thiết lập ngày mặc định là ngày hiện tại hoặc ngày thi đấu gần nhất
+          if (data.length > 0 && !hasSetDefaultDate) {
+            // Lấy danh sách các ngày duy nhất
+            const dates = getUniqueDates(data);
+            if (dates.length > 0) {
+              const now = new Date();
+              const formatter = new Intl.DateTimeFormat('en-US', {
+                timeZone: 'Asia/Ho_Chi_Minh',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+              });
+              const parts = formatter.formatToParts(now);
+              const year = parts.find(p => p.type === 'year')?.value;
+              const month = parts.find(p => p.type === 'month')?.value;
+              const day = parts.find(p => p.type === 'day')?.value;
+              const todayStr = `${year}-${month}-${day}`;
+
+              if (dates.includes(todayStr)) {
+                setSelectedDate(todayStr);
+              } else {
+                // Tìm ngày thi đấu gần nhất tiếp theo
+                const nextMatchDate = dates.find(d => d >= todayStr);
+                if (nextMatchDate) {
+                  setSelectedDate(nextMatchDate);
+                } else {
+                  // Fallback về ngày đầu tiên nếu giải đấu đã kết thúc
+                  setSelectedDate(dates[0]);
+                }
+              }
+              setHasSetDefaultDate(true);
+            }
+          }
+          setLoading(false);
+        }
+      } catch (e) {
+        console.error(e);
+        if (active) setLoading(false);
+      }
+    }
+
+    loadData();
+
+    // Đăng ký realtime
+    const unsubscribe = subscribeMatches(() => {
+      loadData();
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [hasSetDefaultDate]);
+
+
+
+  // Lấy danh sách các ngày thi đấu duy nhất (định dạng DD/MM)
+  const datesList = getUniqueDates(matches);
+
+  // Lọc các trận đấu
+  const liveMatches = matches.filter(m => m.result?.status === 'live');
+  
+  const filteredMatches = matches.filter(m => {
+    // Lọc theo ngày (dạng YYYY-MM-DD để so sánh chuẩn xác, bất biến)
+    const matchDateYMD = (() => {
+      const date = new Date(m.match_time);
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      });
+      const parts = formatter.formatToParts(date);
+      const year = parts.find(p => p.type === 'year')?.value;
+      const month = parts.find(p => p.type === 'month')?.value;
+      const day = parts.find(p => p.type === 'day')?.value;
+      return `${year}-${month}-${day}`;
+    })();
+    
+    const matchDateOk = selectedDate ? matchDateYMD === selectedDate : true;
+
+    return matchDateOk;
+  });
+
+  const getTeamStandingLabel = (teamId: number | null, groupName: string | null | undefined) => {
+    if (!teamId || !groupName) return undefined;
+    const groupRows = standings[groupName];
+    if (!groupRows) return undefined;
+    const index = groupRows.findIndex(row => row.team.id === teamId);
+    if (index === -1) return undefined;
+    return `${groupName}-${index + 1}`;
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="space-y-6 animate-fade-in">
+      {/* 2. WIDGET TRẬN ĐẤU ĐANG DIỄN RA (LIVE MATCHES) */}
+      {liveMatches.length > 0 && (
+        <section className={`space-y-3 ${liveMatches.length === 1 ? 'max-w-2xl mx-auto w-full' : ''}`}>
+          <div className="flex items-center gap-2">
+            <span className="flex h-2.5 w-2.5 rounded-full bg-red-500 live-indicator-pulse" />
+            <h2 className="text-lg font-bold tracking-tight">Trực Tiếp</h2>
+          </div>
+          <div className={`grid gap-6 ${liveMatches.length === 1 ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
+            {liveMatches.map((match) => (
+              <MatchCard 
+                key={match.id} 
+                match={match} 
+                isLiveWidget={true} 
+                homeTeamStanding={getTeamStandingLabel(match.home_team_id, match.home_team?.group_name)}
+                awayTeamStanding={getTeamStandingLabel(match.away_team_id, match.away_team?.group_name)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* 3. LỊCH THI ĐẤU CHI TIẾT */}
+      <section className="space-y-6">
+        {/* Thanh trượt chọn ngày ngang (Fluent Horizontal Date Selector) */}
+        {!loading && datesList.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto pb-2 -mx-2 px-2 scrollbar-none snap-x">
+            <button
+              ref={selectedDate === '' ? activeDateRef : undefined}
+              onClick={() => setSelectedDate('')}
+              className={`snap-start px-4 py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
+                selectedDate === ''
+                  ? 'bg-accent-win text-white border-accent-win shadow-sm'
+                  : 'bg-card-bg/30 text-foreground/75 border-card-border hover:bg-card-bg/60 hover:text-foreground'
+              }`}
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+              Tất cả ngày
+            </button>
+            {datesList.map((dateStr) => {
+              // Format ngày hiển thị dạng: "Ngày DD/MM" từ dateStr dạng YYYY-MM-DD
+              const isSelected = selectedDate === dateStr;
+              const [y, m, d] = dateStr.split('-');
+              const displayDate = `${d}/${m}`;
+              return (
+                <button
+                  key={dateStr}
+                  ref={isSelected ? activeDateRef : undefined}
+                  onClick={() => setSelectedDate(dateStr)}
+                  className={`snap-start px-4 py-2.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer border ${
+                    isSelected
+                      ? 'bg-accent-win text-white border-accent-win shadow-sm'
+                      : 'bg-card-bg/30 text-foreground/75 border-card-border hover:bg-card-bg/60 hover:text-foreground'
+                  }`}
+                >
+                  Ngày {displayDate}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Danh sách trận đấu kết quả */}
+        {loading ? (
+          // Skeleton loader
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {[1, 2, 3, 4].map((n) => (
+              <div key={n} className="h-40 rounded-xl bg-card-bg/25 border border-card-border/50 animate-pulse flex flex-col justify-between p-4">
+                <div className="flex justify-between">
+                  <div className="h-3 w-20 bg-foreground/10 rounded" />
+                  <div className="h-4 w-12 bg-foreground/10 rounded-full" />
+                </div>
+                <div className="flex justify-between items-center py-2">
+                  <div className="flex flex-col items-center gap-2 w-1/3">
+                    <div className="h-12 w-12 rounded-lg bg-foreground/10" />
+                    <div className="h-3 w-16 bg-foreground/10 rounded" />
+                  </div>
+                  <div className="h-6 w-16 bg-foreground/10 rounded" />
+                  <div className="flex flex-col items-center gap-2 w-1/3">
+                    <div className="h-12 w-12 rounded-lg bg-foreground/10" />
+                    <div className="h-3 w-16 bg-foreground/10 rounded" />
+                  </div>
+                </div>
+                <div className="h-2 w-full bg-foreground/10 rounded" />
+              </div>
+            ))}
+          </div>
+        ) : filteredMatches.length > 0 ? (
+          <div className="flex flex-col gap-4 max-w-2xl mx-auto w-full">
+            {filteredMatches.map((match) => (
+              <MatchCard 
+                key={match.id} 
+                match={match} 
+                homeTeamStanding={getTeamStandingLabel(match.home_team_id, match.home_team?.group_name)}
+                awayTeamStanding={getTeamStandingLabel(match.away_team_id, match.away_team?.group_name)}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center py-12 rounded-xl border border-dashed border-card-border/60 bg-card-bg/5 text-center text-foreground/50">
+            <Info size={32} className="mb-2 text-foreground/30" />
+            <p className="text-sm font-medium">Không tìm thấy trận đấu nào khớp với bộ lọc.</p>
+            <p className="text-xs text-foreground/40 mt-1">Hãy thử đổi bộ lọc bảng đấu hoặc chọn một ngày khác.</p>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

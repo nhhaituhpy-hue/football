@@ -1,0 +1,15 @@
+name = "lichworldcup-live"
+main = "scripts/cloudflare_worker.js"
+compatibility_date = "2026-05-25"
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+THETHAO247_LIVE_URL = "https://thethao247.vn/livescores/"
+WC2026_API_KEY = "wc26_Fze5Rd2JmaGi1rbCpZuuEc"
+WC2026_API_BASE_URL = "https://api.wc2026api.com"
+
+[[kv_namespaces]]
+binding = "WC2026_CACHE"
+id = "56c39537640a40e2b21da03991703bf6"
