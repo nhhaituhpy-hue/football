@@ -1,10 +1,34 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Match, StandingRow } from '../types';
 import { fetchMatches, subscribeMatches, fetchTeams, calculateStandings } from '../lib/dataManager';
 import { playGoalSound } from '../lib/sound';
-import MatchCard from '../components/MatchCard';
+import dynamic from 'next/dynamic';
+
+const MatchCard = dynamic(() => import('../components/MatchCard'), {
+  ssr: false,
+  loading: () => (
+    <div className="h-40 rounded-xl bg-card-bg/25 border border-card-border/50 animate-pulse flex flex-col justify-between p-4">
+      <div className="flex justify-between">
+        <div className="h-3 w-20 bg-foreground/10 rounded" />
+        <div className="h-4 w-12 bg-foreground/10 rounded-full" />
+      </div>
+      <div className="flex justify-between items-center py-2">
+        <div className="flex flex-col items-center gap-2 w-1/3">
+          <div className="h-12 w-12 rounded-lg bg-foreground/10" />
+          <div className="h-3 w-16 bg-foreground/10 rounded" />
+        </div>
+        <div className="h-6 w-16 bg-foreground/10 rounded" />
+        <div className="flex flex-col items-center gap-2 w-1/3">
+          <div className="h-12 w-12 rounded-lg bg-foreground/10" />
+          <div className="h-3 w-16 bg-foreground/10 rounded" />
+        </div>
+      </div>
+      <div className="h-2 w-full bg-foreground/10 rounded" />
+    </div>
+  )
+});
 import { 
   SoccerBall, 
   CalendarBlank, 
@@ -33,9 +57,12 @@ function getUniqueDates(allMatches: Match[]) {
 export default function DashboardPage() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [hasSetDefaultDate, setHasSetDefaultDate] = useState(false);
   const [standings, setStandings] = useState<Record<string, StandingRow[]>>({});
+
+
 
   const activeDateRef = React.useRef<HTMLButtonElement | null>(null);
   const prevMatchesRef = React.useRef<Match[]>([]);
@@ -54,81 +81,91 @@ export default function DashboardPage() {
     }
   }, [selectedDate, loading]);
 
-  // Load và subscribe realtime dữ liệu
+  const isMountedRef = React.useRef(true);
   useEffect(() => {
-    let active = true;
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
-    async function loadData() {
-      try {
-        const [data, teams] = await Promise.all([fetchMatches(), fetchTeams()]);
-        if (active) {
-          // So sánh tỉ số cũ và mới để phát âm thanh báo bàn thắng
-          if (prevMatchesRef.current.length > 0) {
-            let scoreChanged = false;
-            data.forEach((match) => {
-              const prevMatch = prevMatchesRef.current.find(m => m.id === match.id);
-              if (prevMatch && prevMatch.result && match.result) {
-                const isLive = match.result.status === 'live';
-                const homeIncreased = match.result.home_score > prevMatch.result.home_score;
-                const awayIncreased = match.result.away_score > prevMatch.result.away_score;
-                if (isLive && (homeIncreased || awayIncreased)) {
-                  scoreChanged = true;
-                }
-              }
-            });
+  // Load và subscribe realtime dữ liệu
+  const loadData = useCallback(async (force = false) => {
+    setIsRefreshing(true);
+    try {
+      const [data, teams] = await Promise.all([fetchMatches(force), fetchTeams()]);
+      if (!isMountedRef.current) return;
 
-            if (scoreChanged) {
-              playGoalSound();
+      // So sánh tỉ số cũ và mới để phát âm thanh báo bàn thắng
+      if (prevMatchesRef.current.length > 0) {
+        let scoreChanged = false;
+        data.forEach((match) => {
+          const prevMatch = prevMatchesRef.current.find(m => m.id === match.id);
+          if (prevMatch && prevMatch.result && match.result) {
+            const isLive = match.result.status === 'live';
+            const homeIncreased = match.result.home_score > prevMatch.result.home_score;
+            const awayIncreased = match.result.away_score > prevMatch.result.away_score;
+            if (isLive && (homeIncreased || awayIncreased)) {
+              scoreChanged = true;
             }
           }
-          prevMatchesRef.current = data;
+        });
 
-          setMatches(data);
-          
-          const currentStandings = calculateStandings(data, teams);
-          setStandings(currentStandings);
-          
-          // Thiết lập ngày mặc định là ngày hiện tại hoặc ngày thi đấu gần nhất
-          if (data.length > 0 && !hasSetDefaultDate) {
-            // Lấy danh sách các ngày duy nhất
-            const dates = getUniqueDates(data);
-            if (dates.length > 0) {
-              const now = new Date();
-              const formatter = new Intl.DateTimeFormat('en-US', {
-                timeZone: 'Asia/Ho_Chi_Minh',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-              });
-              const parts = formatter.formatToParts(now);
-              const year = parts.find(p => p.type === 'year')?.value;
-              const month = parts.find(p => p.type === 'month')?.value;
-              const day = parts.find(p => p.type === 'day')?.value;
-              const todayStr = `${year}-${month}-${day}`;
-
-              if (dates.includes(todayStr)) {
-                setSelectedDate(todayStr);
-              } else {
-                // Tìm ngày thi đấu gần nhất tiếp theo
-                const nextMatchDate = dates.find(d => d >= todayStr);
-                if (nextMatchDate) {
-                  setSelectedDate(nextMatchDate);
-                } else {
-                  // Fallback về ngày đầu tiên nếu giải đấu đã kết thúc
-                  setSelectedDate(dates[0]);
-                }
-              }
-              setHasSetDefaultDate(true);
-            }
-          }
-          setLoading(false);
+        if (scoreChanged) {
+          playGoalSound();
         }
-      } catch (e) {
-        console.error(e);
-        if (active) setLoading(false);
+      }
+      prevMatchesRef.current = data;
+
+      setMatches(data);
+      
+      const currentStandings = calculateStandings(data, teams);
+      setStandings(currentStandings);
+      
+      // Thiết lập ngày mặc định là ngày hiện tại hoặc ngày thi đấu gần nhất
+      if (data.length > 0 && !hasSetDefaultDate) {
+        // Lấy danh sách các ngày duy nhất
+        const dates = getUniqueDates(data);
+        if (dates.length > 0) {
+          const now = new Date();
+          const formatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'Asia/Ho_Chi_Minh',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+          });
+          const parts = formatter.formatToParts(now);
+          const year = parts.find(p => p.type === 'year')?.value;
+          const month = parts.find(p => p.type === 'month')?.value;
+          const day = parts.find(p => p.type === 'day')?.value;
+          const todayStr = `${year}-${month}-${day}`;
+
+          if (dates.includes(todayStr)) {
+            setSelectedDate(todayStr);
+          } else {
+            // Tìm ngày thi đấu gần nhất tiếp theo
+            const nextMatchDate = dates.find(d => d >= todayStr);
+            if (nextMatchDate) {
+              setSelectedDate(nextMatchDate);
+            } else {
+              // Fallback về ngày đầu tiên nếu giải đấu đã kết thúc
+              setSelectedDate(dates[0]);
+            }
+          }
+          setHasSetDefaultDate(true);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      if (isMountedRef.current) {
+        setLoading(false);
+        setIsRefreshing(false);
       }
     }
+  }, [hasSetDefaultDate]);
 
+  useEffect(() => {
     loadData();
 
     // Đăng ký realtime
@@ -137,10 +174,9 @@ export default function DashboardPage() {
     });
 
     return () => {
-      active = false;
       unsubscribe();
     };
-  }, [hasSetDefaultDate]);
+  }, [loadData]);
 
 
 
@@ -181,8 +217,11 @@ export default function DashboardPage() {
     return `${groupName}-${index + 1}`;
   };
 
+
+
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-6 animate-fade-in relative min-h-screen">
+
       {/* 2. WIDGET TRẬN ĐẤU ĐANG DIỄN RA (LIVE MATCHES) */}
       {liveMatches.length > 0 && (
         <section className={`space-y-3 ${liveMatches.length === 1 ? 'max-w-2xl mx-auto w-full' : ''}`}>
@@ -207,7 +246,15 @@ export default function DashboardPage() {
       {/* 3. LỊCH THI ĐẤU CHI TIẾT */}
       <section className="space-y-6">
         {/* Thanh trượt chọn ngày ngang (Fluent Horizontal Date Selector) */}
-        {!loading && datesList.length > 0 && (
+        {loading ? (
+          <div className="flex items-center gap-2 overflow-x-auto pb-2 -mx-2 px-2 scrollbar-none animate-pulse">
+            <div className="h-[38px] w-24 bg-card-bg/20 border border-card-border/50 rounded-lg shrink-0" />
+            <div className="h-[38px] w-20 bg-card-bg/20 border border-card-border/50 rounded-lg shrink-0" />
+            <div className="h-[38px] w-20 bg-card-bg/20 border border-card-border/50 rounded-lg shrink-0" />
+            <div className="h-[38px] w-20 bg-card-bg/20 border border-card-border/50 rounded-lg shrink-0" />
+            <div className="h-[38px] w-20 bg-card-bg/20 border border-card-border/50 rounded-lg shrink-0" />
+          </div>
+        ) : datesList.length > 0 && (
           <div className="flex items-center gap-2 overflow-x-auto pb-2 -mx-2 px-2 scrollbar-none snap-x">
             <button
               ref={selectedDate === '' ? activeDateRef : undefined}
@@ -246,7 +293,7 @@ export default function DashboardPage() {
         {/* Danh sách trận đấu kết quả */}
         {loading ? (
           // Skeleton loader
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="flex flex-col gap-4 max-w-2xl mx-auto w-full">
             {[1, 2, 3, 4].map((n) => (
               <div key={n} className="h-40 rounded-xl bg-card-bg/25 border border-card-border/50 animate-pulse flex flex-col justify-between p-4">
                 <div className="flex justify-between">

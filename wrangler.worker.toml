@@ -3,12 +3,13 @@ main = "scripts/cloudflare_worker.js"
 compatibility_date = "2026-05-25"
 
 [triggers]
-crons = ["* * * * *", "0 */6 * * *"]
+crons = ["* * * * *", "0 */6 * * *", "0 1 * * *"]
 
 [vars]
-THETHAO247_LIVE_URL = "https://thethao247.vn/livescores/"
+BONGDALU_LIVE_URL = "https://free.bongdalu.group/gf/data/bf_vn_nt.js"
 WC2026_API_KEY = "wc26_Fze5Rd2JmaGi1rbCpZuuEc"
 WC2026_API_BASE_URL = "https://api.wc2026api.com"
+THETHAO247_LIVE_URL = "https://thethao247.vn/livescores/"
 
 [[kv_namespaces]]
 binding = "WC2026_CACHE"

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "deploy": "npm run build && npx wrangler pages deploy out --project-name lichworldcup --branch main",
+    "deploy": "npm run build && node scripts/fix_static_paths.js && npx wrangler pages deploy out --project-name lichworldcup --branch main",
     "sync:wc2026": "node scripts/sync_wc2026api.js",
     "worker:dev": "npx wrangler dev scripts/cloudflare_worker.js --config wrangler.worker.toml",
     "worker:deploy": "npx wrangler deploy --config wrangler.worker.toml"

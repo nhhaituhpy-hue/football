@@ -1,3 +1,5 @@
+import * as cheerio from 'cheerio';
+
 /**
  * Cloudflare Worker for World Cup 2026 realtime flow.
  *
@@ -34,10 +36,12 @@ const USER_AGENTS = [
 
 const worker = {
   async scheduled(event, env, ctx) {
-    if (event.cron === "0 */6 * * *") {
+    if (event.cron === "0 1 * * *") {
+      ctx.waitUntil(syncPredictionsToday(env));
+    } else if (event.cron === "0 */6 * * *") {
       ctx.waitUntil(syncWc2026Schedule(env));
     } else {
-      ctx.waitUntil(refreshLiveCache(env, ctx));
+      ctx.waitUntil(refreshLiveCache(env, ctx, true));
     }
   },
 
@@ -45,30 +49,115 @@ const worker = {
     if (request.method === 'OPTIONS') return new Response(null, { headers: JSON_HEADERS });
 
     const url = new URL(request.url);
+    const isCacheablePath = ['/live', '/matches', '/standings'].includes(url.pathname);
+    const force = url.searchParams.get('force') === 'true';
+
+    // Try to fetch from Cloudflare Cache API
+    const cache = caches.default;
+    const cacheKey = new Request(url.toString(), request);
+    if (isCacheablePath && request.method === 'GET' && !force) {
+      try {
+        const cachedResponse = await cache.match(cacheKey);
+        if (cachedResponse) {
+          return cachedResponse;
+        }
+      } catch (cacheError) {
+        console.warn('Cache match failed:', cacheError.message);
+      }
+    }
+
     try {
       if (url.pathname === '/sync-schedule') {
         await syncWc2026Schedule(env);
         return json({ status: 'success', message: 'Schedule and teams synced successfully' });
       }
 
+      if (url.pathname === '/sync-predictions') {
+        const result = await syncPredictionsToday(env);
+        return json(result);
+      }
+
+      if (url.pathname === '/sync-events') {
+        const matchIdStr = url.searchParams.get('match_id');
+        if (!matchIdStr) {
+          return json({ error: 'Missing match_id parameter' }, 400);
+        }
+        const matchId = parseInt(matchIdStr, 10);
+        if (isNaN(matchId)) {
+          return json({ error: 'Invalid match_id' }, 400);
+        }
+
+        const dbMatches = await getSupabaseRows(env, `/rest/v1/wc2026_matches?id=eq.${matchId}`);
+        if (!dbMatches || dbMatches.length === 0) {
+          return json({ error: 'Match not found' }, 404);
+        }
+        const match = dbMatches[0];
+
+        await scrapeAndSyncMatchEvents(env, ctx, match.id, match.home_team_name, match.away_team_name);
+        
+        const events = await getSupabaseRows(env, `/rest/v1/wc2026_match_events?match_id=eq.${matchId}&provider=eq.thethao247`);
+
+        return json({ 
+          status: 'success', 
+          message: `Events sync completed for match ${matchId}`,
+          events_count: events.length,
+          events: events
+        });
+      }
+
+      let payload;
+      let cacheTtl = 10; // Default cache TTL in seconds
+
       if (url.pathname === '/live') {
-        const data = await getLive(env, ctx);
-        return json(data);
+        payload = await getLive(env, ctx, force);
+        cacheTtl = 10;
+      } else if (url.pathname === '/matches') {
+        const data = await getSupabaseRows(env, '/rest/v1/wc2026_matches?select=*&order=kickoff_utc.asc');
+        payload = {
+          data,
+          cached: false,
+          updated_at: new Date().toISOString(),
+        };
+        cacheTtl = 300; // Matches can be cached for 5 mins in CDN
+      } else if (url.pathname === '/standings') {
+        const data = await getStandings(env);
+        payload = {
+          data,
+          cached: false,
+          updated_at: new Date().toISOString(),
+        };
+        cacheTtl = 300; // Standings can be cached for 5 mins in CDN
+      } else {
+        return json({ error: 'Not found' }, 404);
       }
 
-      if (url.pathname === '/matches') {
-        const data = await getCached(env, 'matches', () =>
-          getSupabaseRows(env, '/rest/v1/wc2026_matches?select=*&order=kickoff_utc.asc'),
-        );
-        return json(data);
+      // Create the response and add Cache-Control headers
+      const responseHeaders = {
+        ...JSON_HEADERS,
+        'Cache-Control': `public, max-age=${cacheTtl}, s-maxage=${cacheTtl}`,
+      };
+      const response = new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: responseHeaders,
+      });
+
+      // Store the response in Cache API
+      if (isCacheablePath && request.method === 'GET') {
+        try {
+          ctx.waitUntil(cache.put(cacheKey, response.clone()));
+          if (force && url.pathname === '/live') {
+            // Also update the cache for the regular URL (without ?force=true)
+            const regularUrl = new URL(url.toString());
+            regularUrl.searchParams.delete('force');
+            const regularCacheKey = new Request(regularUrl.toString(), request);
+            ctx.waitUntil(cache.put(regularCacheKey, response.clone()));
+          }
+        } catch (cachePutError) {
+          console.warn('Cache put failed:', cachePutError.message);
+        }
       }
 
-      if (url.pathname === '/standings') {
-        const data = await getCached(env, 'standings', () => getStandings(env));
-        return json(data);
-      }
-
-      return json({ error: 'Not found' }, 404);
+      return response;
     } catch (error) {
       return json({ error: error.message }, 500);
     }
@@ -81,30 +170,19 @@ function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: JSON_HEADERS });
 }
 
-async function getLive(env, ctx) {
-  const cached = await env.WC2026_CACHE?.get('live', 'json');
-  if (cached) return { ...cached, cached: true };
+async function getLive(env, ctx, force = false) {
+  if (!force) {
+    const cached = await env.WC2026_CACHE?.get('live', 'json');
+    if (cached) return { ...cached, cached: true };
+  }
 
-  const fresh = await refreshLiveCache(env, ctx);
+  const fresh = await refreshLiveCache(env, ctx, false);
   ctx?.waitUntil?.(Promise.resolve());
   return { ...fresh, cached: false };
 }
 
-async function getCached(env, key, loader) {
-  const cached = await env.WC2026_CACHE?.get(key, 'json');
-  if (cached) return { ...cached, cached: true };
 
-  const envelope = {
-    data: await loader(),
-    cached: false,
-    updated_at: new Date().toISOString(),
-  };
-
-  await env.WC2026_CACHE?.put(key, JSON.stringify(envelope), { expirationTtl: CACHE_TTL_SECONDS });
-  return envelope;
-}
-
-async function refreshLiveCache(env, ctx) {
+async function refreshLiveCache(env, ctx, isCron = false) {
   try {
     const [dbMatches, dbTeams] = await Promise.all([
       getSupabaseRows(env, '/rest/v1/wc2026_matches?select=*'),
@@ -117,10 +195,13 @@ async function refreshLiveCache(env, ctx) {
     const now = new Date();
     const hasActiveOrUpcomingMatches = dbMatches.some(m => {
       if (m.status === 'live' || m.status === 'in_progress') return true;
+      if (m.status === 'finished' || m.status === 'cancelled' || m.status === 'postponed') return false;
+
       const kickoff = new Date(m.kickoff_utc);
       const diffMs = now.getTime() - kickoff.getTime();
-      // Within 15 minutes before kickoff to 150 minutes after kickoff (approx 2.5 hours)
-      return diffMs >= -15 * 60 * 1000 && diffMs <= 150 * 60 * 1000;
+      
+      // If kickoff is in the past, or upcoming within the next 15 minutes
+      return diffMs >= -15 * 60 * 1000;
     });
 
     if (!hasActiveOrUpcomingMatches) {
@@ -130,12 +211,23 @@ async function refreshLiveCache(env, ctx) {
         cached: false,
         updated_at: now.toISOString(),
       };
-      await env.WC2026_CACHE?.put('live', JSON.stringify(envelope), { expirationTtl: CACHE_TTL_SECONDS });
+      
+      const cachedKV = await env.WC2026_CACHE?.get('live', 'json').catch(() => null);
+      const oldData = cachedKV ? cachedKV.data : null;
+
+      if (!oldData || oldData.length > 0) {
+        console.log('Updating KV cache with empty live matches list...');
+        await env.WC2026_CACHE?.put('live', JSON.stringify(envelope));
+      } else {
+        console.log('Live matches list is already empty in KV. Skipping KV write.');
+        if (cachedKV) {
+          envelope.updated_at = cachedKV.updated_at;
+        }
+      }
       return envelope;
     }
 
     const teamsById = new Map(dbTeams.map(t => [t.id, t]));
-    const rawEvents = await fetchThethao247Live(env);
 
     // Fetch wc2026api matches lazily when needed
     let wc2026Matches = null;
@@ -151,83 +243,114 @@ async function refreshLiveCache(env, ctx) {
       return wc2026Matches;
     };
 
-    const dataPromises = rawEvents.map(async (event) => {
-      const match = findMatchingMatch(dbMatches, teamsById, event);
-      if (!match) return null;
+    // Function to run a single scrape step
+    const runScrapeStep = async () => {
+      console.log(`Executing live scrape step at ${new Date().toISOString()}...`);
+      const rawEvents = await fetchBongdaluLive(env).catch(err => {
+        console.warn('Failed to fetch Bongdalu live matches:', err.message);
+        return [];
+      });
 
-      // If the match is already marked as finished in the database, skip scraping or updating it.
-      if (match.status === 'finished') {
-        return null;
-      }
+      const dataPromises = rawEvents.map(async (event) => {
+        const match = findMatchingMatch(dbMatches, teamsById, event);
+        if (!match) return null;
 
-      let eventsList = [];
-      if ((event.status === 'live' || event.status === 'finished') && event.detailUrl) {
-        try {
-          eventsList = await fetchMatchEventsDetail(event.detailUrl, match.id);
-          // Persist match events to Supabase database so they are saved permanently
-          ctx?.waitUntil?.(upsertMatchEventsToSupabase(env, match.id, eventsList));
-        } catch (err) {
-          console.warn(`Failed to fetch events detail for match ${match.id}:`, err.message);
+        if (match.status === 'finished') {
+          return null;
         }
-      }
 
-      let homeScore = event.homeScore;
-      let awayScore = event.awayScore;
-      let homePen = null;
-      let awayPen = null;
-      let phase = event.isHt ? 'HT' : (event.status === 'live' ? 'Live' : event.status === 'finished' ? 'FT' : null);
-      let status = event.status;
+        let homeScore = event.homeScore;
+        let awayScore = event.awayScore;
+        let homePen = null;
+        let awayPen = null;
+        let phase = event.phase;
+        let status = event.status;
 
-      if (event.status === 'finished') {
-        // Retrieve the official score from the WC2026 API
-        const wcMatchesList = await getWc2026MatchesCached();
-        const apiMatch = wcMatchesList.find(m => Number(m.id) === Number(match.id));
-        if (apiMatch) {
-          homeScore = apiMatch.home_score ?? homeScore;
-          awayScore = apiMatch.away_score ?? awayScore;
-          homePen = apiMatch.home_pen ?? null;
-          awayPen = apiMatch.away_pen ?? null;
-          phase = apiMatch.phase || 'FT';
-          status = 'finished';
-          console.log(`Using official WC2026 API score for match ${match.id} (FT): ${homeScore} - ${awayScore}`);
-        } else {
-          console.warn(`Match ${match.id} is finished but not found in WC2026 API`);
+        const wasNotFinishedInDb = match.status !== 'finished';
+        const isNowFinished = status === 'finished';
+
+        if (isNowFinished) {
+          // Retrieve official score from WC2026 API
+          const wcMatchesList = await getWc2026MatchesCached();
+          const apiMatch = wcMatchesList.find(m => Number(m.id) === Number(match.id));
+          if (apiMatch) {
+            homeScore = apiMatch.home_score ?? homeScore;
+            awayScore = apiMatch.away_score ?? awayScore;
+            homePen = apiMatch.home_pen ?? null;
+            awayPen = apiMatch.away_pen ?? null;
+            phase = apiMatch.phase || 'FT';
+            status = 'finished';
+            console.log(`Using official WC2026 API score for match ${match.id} (FT): ${homeScore} - ${awayScore}`);
+          } else {
+            console.warn(`Match ${match.id} is finished but not found in WC2026 API`);
+          }
+
+          // Update match status in the local DB matches array to prevent scraping it again in next steps
+          match.status = 'finished';
+
+          // Sync detail events from thethao247 exactly once in the background
+          if (wasNotFinishedInDb) {
+            ctx?.waitUntil?.(scrapeAndSyncMatchEvents(env, ctx, match.id, match.home_team_name, match.away_team_name));
+          }
         }
-      }
 
-      // Also persist match score, phase and status updates in the background
-      if (status === 'live' || status === 'finished') {
-        ctx?.waitUntil?.(updateMatchScoreInSupabase(env, match.id, homeScore, awayScore, status, phase, homePen, awayPen));
-      }
+        if (status === 'live' || status === 'finished') {
+          ctx?.waitUntil?.(updateMatchScoreInSupabase(env, match.id, homeScore, awayScore, status, phase, homePen, awayPen));
+        }
 
-      return {
-        match_id: Number(match.id),
-        provider_event_id: `${match.id}_thethao247`,
-        status: status, // 'live', 'finished', 'scheduled'
-        phase: phase,
-        clock: null,
-        minute: event.minute,
-        home_score: homeScore,
-        away_score: awayScore,
-        home_pen: homePen,
-        away_pen: awayPen,
-        events: eventsList,
+        return {
+          match_id: Number(match.id),
+          provider_event_id: `${match.id}_bongdalu`,
+          status: status,
+          phase: phase,
+          clock: null,
+          minute: event.minute,
+          home_score: homeScore,
+          away_score: awayScore,
+          home_pen: homePen,
+          away_pen: awayPen,
+          events: [], // Realtime Bongdalu doesn't populate detailed events
+          updated_at: new Date().toISOString(),
+        };
+      });
+
+      const data = (await Promise.all(dataPromises)).filter(Boolean);
+
+      const cachedKV = await env.WC2026_CACHE?.get('live', 'json').catch(() => null);
+      const oldData = cachedKV ? cachedKV.data : null;
+
+      const envelope = {
+        data,
+        cached: false,
         updated_at: new Date().toISOString(),
       };
-    });
 
-    const data = (await Promise.all(dataPromises)).filter(Boolean);
-
-    const envelope = {
-      data,
-      cached: false,
-      updated_at: new Date().toISOString(),
+      if (dataHasChanged(oldData, data)) {
+        console.log('Live data has changed. Updating KV cache...');
+        await env.WC2026_CACHE?.put('live', JSON.stringify(envelope));
+      } else {
+        console.log('Live data has not changed. Skipping KV write.');
+        if (cachedKV) {
+          envelope.updated_at = cachedKV.updated_at;
+        }
+      }
+      return envelope;
     };
 
-    await env.WC2026_CACHE?.put('live', JSON.stringify(envelope), { expirationTtl: CACHE_TTL_SECONDS });
-    return envelope;
+    // Execute scraping steps (1 step for HTTP requests, 4 steps spaced 15s apart for scheduled cron)
+    const totalSteps = isCron ? 4 : 1;
+    let lastEnvelope = null;
+
+    for (let step = 0; step < totalSteps; step++) {
+      if (step > 0) {
+        await new Promise(resolve => setTimeout(resolve, 15000));
+      }
+      lastEnvelope = await runScrapeStep();
+    }
+
+    return lastEnvelope;
   } catch (error) {
-    console.warn('Thethao247 refresh failed, falling back:', error.message);
+    console.warn('Bongdalu refresh failed, falling back:', error.message);
     const cached = await env.WC2026_CACHE?.get('live', 'json');
     if (cached) return { ...cached, cached: true };
 
@@ -448,12 +571,311 @@ async function updateMatchScoreInSupabase(env, matchId, homeScore, awayScore, st
   }
 }
 
+// === BONGDALU PARSER HELPERS ===
+function parseJsArrayLiteral(str) {
+  const tokens = [];
+  let i = 0;
+  while (i < str.length) {
+    const char = str[i];
+    if (char === '[' || char === ']' || char === ',') {
+      tokens.push(char);
+      i++;
+    } else if (char === "'" || char === '"') {
+      const quote = char;
+      let val = '';
+      i++;
+      while (i < str.length && str[i] !== quote) {
+        if (str[i] === '\\') {
+          val += str[i + 1];
+          i += 2;
+        } else {
+          val += str[i];
+          i++;
+        }
+      }
+      tokens.push({ type: 'string', value: val });
+      i++; 
+    } else if (/\s/.test(char)) {
+      i++; 
+    } else {
+      let val = '';
+      while (i < str.length && str[i] !== ',' && str[i] !== ']' && str[i] !== '[' && !/\s/.test(str[i])) {
+        val += str[i];
+        i++;
+      }
+      if (val === 'true' || val === 'True') {
+        tokens.push(true);
+      } else if (val === 'false' || val === 'False') {
+        tokens.push(false);
+      } else if (val === 'null') {
+        tokens.push(null);
+      } else if (val === '') {
+        // empty
+      } else if (!isNaN(Number(val))) {
+        tokens.push(Number(val));
+      } else {
+        tokens.push(val); 
+      }
+    }
+  }
+
+  if (tokens[0] !== '[') return null;
+  const result = [];
+  let expectedValue = true; 
+  
+  for (let t = 1; t < tokens.length - 1; t++) {
+    const tok = tokens[t];
+    if (tok === ',') {
+      if (expectedValue) {
+        result.push(null);
+      }
+      expectedValue = true;
+    } else if (tok === ']') {
+      break;
+    } else {
+      const val = (tok && typeof tok === 'object' && tok.type === 'string') ? tok.value : tok;
+      result.push(val);
+      expectedValue = false;
+    }
+  }
+  if (expectedValue && result.length > 0 && tokens[tokens.length - 2] === ',') {
+    result.push(null);
+  }
+  return result;
+}
+
+function parseBongdaluJs(jsText) {
+  const A = [];
+  const B = [];
+  const C = [];
+  let matchcount = 0;
+  let sclasscount = 0;
+  let lastCreateTime_bfIndex = '';
+
+  const lines = jsText.split('\n');
+  for (let line of lines) {
+    line = line.trim();
+    if (!line) continue;
+
+    if (line.startsWith('A[')) {
+      const matchIdx = line.match(/^A\[(\d+)\]\s*=\s*(.*)$/);
+      if (matchIdx) {
+        const idx = parseInt(matchIdx[1], 10);
+        const arrStr = matchIdx[2].trim().replace(/;$/, '');
+        A[idx] = parseJsArrayLiteral(arrStr);
+      }
+    } else if (line.startsWith('B[')) {
+      const matchIdx = line.match(/^B\[(\d+)\]\s*=\s*(.*)$/);
+      if (matchIdx) {
+        const idx = parseInt(matchIdx[1], 10);
+        const arrStr = matchIdx[2].trim().replace(/;$/, '');
+        B[idx] = parseJsArrayLiteral(arrStr);
+      }
+    } else if (line.startsWith('C[')) {
+      const matchIdx = line.match(/^C\[(\d+)\]\s*=\s*(.*)$/);
+      if (matchIdx) {
+        const idx = parseInt(matchIdx[1], 10);
+        const arrStr = matchIdx[2].trim().replace(/;$/, '');
+        C[idx] = parseJsArrayLiteral(arrStr);
+      }
+    } else if (line.startsWith('var matchcount')) {
+      const m = line.match(/matchcount\s*=\s*(\d+)/);
+      if (m) matchcount = parseInt(m[1], 10);
+    } else if (line.startsWith('var sclasscount')) {
+      const m = line.match(/sclasscount\s*=\s*(\d+)/);
+      if (m) sclasscount = parseInt(m[1], 10);
+    } else if (line.startsWith('var lastCreateTime_bfIndex')) {
+      const m = line.match(/lastCreateTime_bfIndex\s*=\s*["']([^"']+)["']/);
+      if (m) lastCreateTime_bfIndex = m[1];
+    }
+  }
+
+  return { A, B, C, matchcount, sclasscount, lastCreateTime_bfIndex };
+}
+
+function removeNeutralSuffix(name) {
+  if (!name) return '';
+  return name.replace(/<font[^>]*>\s*\(N\)\s*<\/font>/gi, '')
+             .replace(/\s*\(N\)\s*$/gi, '')
+             .replace(/<[^>]*>/g, '')
+             .trim();
+}
+
+function parseUtcDate(str) {
+  if (!str) return null;
+  const parts = str.match(/(\d+)-(\d+)-(\d+)\s+(\d+):(\d+):(\d+)/);
+  if (!parts) return new Date(str);
+  return new Date(Date.UTC(
+    parseInt(parts[1], 10),
+    parseInt(parts[2], 10) - 1,
+    parseInt(parts[3], 10),
+    parseInt(parts[4], 10),
+    parseInt(parts[5], 10),
+    parseInt(parts[6], 10)
+  ));
+}
+
+async function fetchBongdaluLive(env) {
+  const url = env.BONGDALU_LIVE_URL || "https://free.bongdalu.group/gf/data/bf_vn_nt.js";
+  const randomUserAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': randomUserAgent,
+      'Accept': '*/*',
+      'Referer': 'https://free.bongdalu.group/free/freesoccer',
+    },
+    cf: { cacheTtl: CACHE_TTL_SECONDS, cacheEverything: true },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Bongdalu returned HTTP ${response.status}`);
+  }
+
+  const jsText = await response.text();
+  const parsed = parseBongdaluJs(jsText);
+  const { A, B } = parsed;
+
+  const matches = [];
+  for (let i = 1; i < A.length; i++) {
+    const match = A[i];
+    if (!match) continue;
+
+    const leagueInfo = B[match[1]];
+    if (!leagueInfo) continue;
+
+    const leagueId = leagueInfo[0];
+    const leagueNameEn = leagueInfo[1] || '';
+    const leagueNameVi = leagueInfo[8] || '';
+
+    const isWorldCup = 
+      leagueId === 75 || 
+      leagueNameEn.toLowerCase().includes('world cup') || 
+      leagueNameVi.toLowerCase().includes('world cup');
+
+    if (!isWorldCup) continue;
+
+    const homeName = removeNeutralSuffix(match[4]);
+    const awayName = removeNeutralSuffix(match[5]);
+
+    const bongdaluStatus = match[8];
+    let status = 'scheduled';
+    let phase = null;
+    let minute = null;
+    let isHt = false;
+
+    if (bongdaluStatus === 0) {
+      status = 'scheduled';
+    } else if (bongdaluStatus === -1) {
+      status = 'finished';
+      phase = 'FT';
+      minute = 90;
+    } else if (bongdaluStatus > 0) {
+      status = 'live';
+      phase = bongdaluStatus === 2 ? 'HT' : 'Live';
+      isHt = bongdaluStatus === 2;
+
+      const now = new Date();
+      const start = parseUtcDate(match[7]);
+      if (start) {
+        const diffMs = now.getTime() - start.getTime();
+        const diffMin = Math.ceil(diffMs / 60000);
+        if (bongdaluStatus === 1) {
+          minute = Math.max(1, Math.min(45, diffMin));
+        } else if (bongdaluStatus === 2) {
+          minute = 45;
+        } else if (bongdaluStatus === 3) {
+          minute = Math.max(46, Math.min(90, 45 + diffMin));
+        } else if (bongdaluStatus === 4) {
+          minute = Math.max(91, 90 + diffMin);
+        } else {
+          minute = Math.max(1, diffMin);
+        }
+      }
+    } else {
+      if (bongdaluStatus === -10) {
+        status = 'cancelled';
+      } else if (bongdaluStatus === -12 || bongdaluStatus === -14) {
+        status = 'postponed';
+      } else {
+        status = 'scheduled';
+      }
+    }
+
+    const homeScore = match[9] !== null && match[9] !== undefined ? Number(match[9]) : null;
+    const awayScore = match[10] !== null && match[10] !== undefined ? Number(match[10]) : null;
+
+    matches.push({
+      homeName,
+      awayName,
+      homeScore,
+      awayScore,
+      status,
+      phase,
+      minute,
+      isHt,
+      redCards: {
+        home: Number(match[13]) || 0,
+        away: Number(match[14]) || 0
+      },
+      yellowCards: {
+        home: Number(match[15]) || 0,
+        away: Number(match[16]) || 0
+      }
+    });
+  }
+
+  return matches;
+}
+
+async function scrapeAndSyncMatchEvents(env, ctx, matchId, homeTeamName, awayTeamName) {
+  try {
+    console.log(`Starting post-match event scraping from thethao247 for match ${matchId} (${homeTeamName} vs ${awayTeamName})...`);
+    
+    // Fetch all teams from database to resolve synonyms (English/Vietnamese names)
+    const dbTeams = await getSupabaseRows(env, '/rest/v1/wc2026_teams?select=*').catch(() => []);
+    
+    // Find the teams involved in this match from the database
+    const homeTeam = dbTeams.find(t => t.name_en === homeTeamName || t.name_vi === homeTeamName);
+    const awayTeam = dbTeams.find(t => t.name_en === awayTeamName || t.name_vi === awayTeamName);
+    
+    if (!homeTeam || !awayTeam) {
+      console.warn(`Could not resolve home/away team database entities for match ${matchId}: ${homeTeamName} vs ${awayTeamName}`);
+      return;
+    }
+
+    const thethaoMatches = await fetchThethao247Live(env).catch(() => []);
+    
+    const match = thethaoMatches.find(m => {
+      const homeMatch = teamMatches(homeTeam, m.homeName);
+      const awayMatch = teamMatches(awayTeam, m.awayName);
+      return homeMatch && awayMatch;
+    });
+    
+    if (match && match.detailUrl) {
+      console.log(`Found thethao247 detailUrl for match ${matchId}: ${match.detailUrl}`);
+      const eventsList = await fetchMatchEventsDetail(match.detailUrl, matchId);
+      
+      if (eventsList.length > 0) {
+        await upsertMatchEventsToSupabase(env, matchId, eventsList);
+        console.log(`Successfully synced ${eventsList.length} events for match ${matchId} from thethao247`);
+      } else {
+        console.log(`No events parsed from detailUrl for match ${matchId}`);
+      }
+    } else {
+      console.warn(`Could not find matching thethao247 match for ${homeTeamName} vs ${awayTeamName}`);
+    }
+  } catch (err) {
+    console.warn(`Failed to sync events for match ${matchId} from thethao247:`, err.message);
+  }
+}
+
 async function fetchThethao247Live(env) {
-  if (!env.THETHAO247_LIVE_URL) return [];
+  const url = env.THETHAO247_LIVE_URL || 'https://thethao247.vn/livescores/';
 
   const randomUserAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
-  const response = await fetch(env.THETHAO247_LIVE_URL, {
+  const response = await fetch(url, {
     headers: {
       'User-Agent': randomUserAgent,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -493,7 +915,15 @@ async function fetchThethao247Live(env) {
       }
     }
 
-    // Extract status early
+    // Extract time / minute early
+    const timeBlockMatch = block.match(/<div class="time">([\s\S]*?)<\/div>/);
+    let timeText = '';
+    if (timeBlockMatch) {
+      const timeHtml = timeBlockMatch[1];
+      timeText = timeHtml.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    }
+
+    // Extract status
     const moreBlockMatch = block.match(/<div class="more">([\s\S]*?)<\/div>/);
     let statusText = '';
     if (moreBlockMatch) {
@@ -501,25 +931,19 @@ async function fetchThethao247Live(env) {
     }
 
     const isLive = block.includes('is_live') || block.includes('blink_me') || statusText.toLowerCase().includes('live');
-    const isFinished = statusText.toLowerCase() === 'ft' || statusText.toLowerCase() === 'hết giờ' || statusText.toLowerCase().includes('finished') || statusText.toLowerCase().includes('ended');
+    const isFinished = 
+      statusText.toLowerCase() === 'ft' || statusText.toLowerCase() === 'hết giờ' || statusText.toLowerCase().includes('finished') || statusText.toLowerCase().includes('ended') ||
+      timeText.toLowerCase() === 'ft' || timeText.toLowerCase() === 'hết giờ' || timeText.toLowerCase().includes('finished') || timeText.toLowerCase().includes('ended');
 
-    // Extract time / minute
-    const timeBlockMatch = block.match(/<div class="time">([\s\S]*?)<\/div>/);
-    let timeText = '';
     let minute = null;
     let isHt = false;
-    if (timeBlockMatch) {
-      const timeHtml = timeBlockMatch[1];
-      timeText = timeHtml.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-      
+    if (timeBlockMatch && isLive) {
       const matchMin = timeText.match(/(\d+)/);
-      if (isLive) {
-        if (matchMin) {
-          minute = Number(matchMin[1]);
-        }
-        if (timeText.toUpperCase().includes('HT') || timeText.includes('giữa hiệp') || timeText.toLowerCase() === 'hết hiệp 1') {
-          isHt = true;
-        }
+      if (matchMin) {
+        minute = Number(matchMin[1]);
+      }
+      if (timeText.toUpperCase().includes('HT') || timeText.includes('giữa hiệp') || timeText.toLowerCase() === 'hết hiệp 1') {
+        isHt = true;
       }
     }
 
@@ -545,6 +969,8 @@ function cleanName(name) {
   if (!name) return '';
   return name
     .toLowerCase()
+    .replace(/&amp;/g, '')
+    .replace(/amp/g, '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '') // Remove Vietnamese accents
     .replace(/[^a-z0-9]/g, '')       // Keep only alphanumeric characters
@@ -566,7 +992,9 @@ function teamMatches(team, scrapedName) {
   if (cleanScraped.includes('my') && cleanVi.includes('my')) return true;
   if (cleanScraped.includes('hoaky') && cleanVi.includes('my')) return true;
   if (cleanScraped.includes('uc') && cleanVi.includes('uc')) return true;
-  if (cleanScraped.includes('arab') && cleanVi.includes('saudi')) return true;
+  if ((cleanScraped.includes('arab') || cleanScraped.includes('arap')) && (cleanVi.includes('saudi') || cleanEn.includes('saudi'))) return true;
+  if (cleanScraped.includes('sec') && (cleanVi.includes('czechia') || cleanEn.includes('czechia'))) return true;
+  if (cleanScraped === 'thonk' && cleanVi === 'thonhiky') return true;
 
   return false;
 }
@@ -896,4 +1324,523 @@ async function syncWc2026Schedule(env) {
     console.error('Error during scheduled schedule sync:', error.message);
     throw error;
   }
+}
+
+function dataHasChanged(oldData, newData) {
+  if (!oldData || !newData) return true;
+  if (!Array.isArray(oldData) || !Array.isArray(newData)) return true;
+  if (oldData.length !== newData.length) return true;
+  for (let i = 0; i < oldData.length; i++) {
+    const o = oldData[i];
+    const n = newData[i];
+    if (!o || !n) return true;
+    if (o.match_id !== n.match_id) return true;
+    if (o.status !== n.status) return true;
+    if (o.phase !== n.phase) return true;
+    // Skip minute comparison to prevent KV writes every minute:
+    // if (o.minute !== n.minute) return true;
+    if (o.home_score !== n.home_score) return true;
+    if (o.away_score !== n.away_score) return true;
+    if (o.home_pen !== n.home_pen) return true;
+    if (o.away_pen !== n.away_pen) return true;
+    
+    // Compare events list
+    const oEvents = o.events || [];
+    const nEvents = n.events || [];
+    if (oEvents.length !== nEvents.length) return true;
+    for (let j = 0; j < oEvents.length; j++) {
+      if (oEvents[j].event_type !== nEvents[j].event_type) return true;
+      if (oEvents[j].minute !== nEvents[j].minute) return true;
+      if (oEvents[j].player_name !== nEvents[j].player_name) return true;
+    }
+  }
+  return false;
+}
+
+// --- World Cup 2026 Daily Prediction Scraper Logic ---
+
+const nameMap = {
+  'cộng hòa séc': 'CZE',
+  'ch séc': 'CZE',
+  'séc': 'CZE',
+  'nam phi': 'RSA',
+  'thụy sĩ': 'SUI',
+  'bosnia & herzegovina': 'BIH',
+  'bosnia-herzegovina': 'BIH',
+  'bosnia': 'BIH',
+  'canada': 'CAN',
+  'qatar': 'QAT',
+  'uzbekistan': 'UZB',
+  'colombia': 'COL',
+  'algeria': 'ALG',
+  'argentina': 'ARG',
+  'úc': 'AUS',
+  'australia': 'AUS',
+  'áo': 'AUT',
+  'bỉ': 'BEL',
+  'brazil': 'BRA',
+  'bờ biển ngà': 'CIV',
+  'côte d\'ivoire': 'CIV',
+  'congo dr': 'COD',
+  'chdc congo': 'COD',
+  'cabo verde': 'CPV',
+  'cape verde': 'CPV',
+  'croatia': 'CRO',
+  'curaçao': 'CUW',
+  'curacao': 'CUW',
+  'ecuador': 'ECU',
+  'ai cập': 'EGY',
+  'anh': 'ENG',
+  'tây ban nha': 'ESP',
+  'pháp': 'FRA',
+  'đức': 'GER',
+  'ghana': 'GHA',
+  'haiti': 'HAI',
+  'iran': 'IRN',
+  'iraq': 'IRQ',
+  'jordan': 'JOR',
+  'nhật bản': 'JPN',
+  'hàn quốc': 'KOR',
+  'ả rập saudi': 'KSA',
+  'saudi arabia': 'KSA',
+  'ma rốc': 'MAR',
+  'morocco': 'MAR',
+  'mexico': 'MEX',
+  'hà lan': 'NED',
+  'na uy': 'NOR',
+  'new zealand': 'NZL',
+  'panama': 'PAN',
+  'paraguay': 'PAR',
+  'bồ đào nha': 'POR',
+  'scotland': 'SCO',
+  'senegal': 'SEN',
+  'thụy diễn': 'SWE',
+  'thụy điển': 'SWE',
+  'tunisia': 'TUN',
+  'thổ nhĩ kỳ': 'TUR',
+  'thổ n. k.': 'TUR',
+  'uruguay': 'URU',
+  'mỹ': 'USA',
+  'usa': 'USA'
+};
+
+function getTeamCode(name) {
+  if (!name) return null;
+  const clean = name.toLowerCase().trim();
+  return nameMap[clean] || null;
+}
+
+function getTeamNames(code, defaultName) {
+  const names = Object.keys(nameMap).filter(k => nameMap[k] === code);
+  if (defaultName && !names.includes(defaultName.toLowerCase().trim())) {
+    names.push(defaultName.toLowerCase().trim());
+  }
+  return names;
+}
+
+function findScorePrediction($, homeCode, homeName, awayCode, awayName) {
+  const homeTerms = getTeamNames(homeCode, homeName);
+  const awayTerms = getTeamNames(awayCode, awayName);
+  const mediaTerms = [
+    'sportskeeda', 'sports mole', 'sportsmole', 'standard', 'whoscored', 'mole', 
+    'siêu máy tính', 'máy tính', 'nhà báo', 'chuyên gia',
+    'phạt góc', 'thẻ phạt', 'bàn thắng', 'thẻ vàng', 'góc'
+  ];
+  
+  const blocks = [];
+  $('#content_detail').find('p, li, h2, h3, h4').each((i, el) => {
+    const txt = $(el).text().trim();
+    if (txt) blocks.push(txt);
+  });
+  
+  const scoreRegex = /\b\d+\s*[-–]\s*\d+\b/;
+  
+  for (const block of blocks) {
+    const blockLower = block.toLowerCase();
+    if (mediaTerms.some(term => blockLower.includes(term))) continue;
+
+    const sentences = block.split(/[.!?\n]/);
+    for (let sentence of sentences) {
+      sentence = sentence.trim();
+      if (!sentence) continue;
+      
+      const sentenceLower = sentence.toLowerCase();
+      
+      if (sentenceLower.includes('dự đoán')) {
+        if (scoreRegex.test(sentence)) {
+          const hasHome = homeTerms.some(term => sentenceLower.includes(term));
+          const hasAway = awayTerms.some(term => sentenceLower.includes(term));
+          
+          if (hasHome && hasAway) {
+            return sentence;
+          }
+        }
+      }
+    }
+  }
+  
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    const blockLower = block.toLowerCase();
+    if (blockLower.includes('dự đoán tỷ số') && !blockLower.includes('truyền thông')) {
+      const hasHome = homeTerms.some(term => blockLower.includes(term));
+      const hasAway = awayTerms.some(term => blockLower.includes(term));
+      
+      if (hasHome && hasAway && i + 1 < blocks.length) {
+        const nextBlock = blocks[i + 1];
+        if (scoreRegex.test(nextBlock)) {
+          return `${block}: ${nextBlock}`;
+        }
+      }
+    }
+  }
+  
+  return '';
+}
+
+function getParagraphsUntilNextHeadingOrLi($, startEl) {
+  let result = [];
+  let current = startEl;
+  if (startEl.is('li') && startEl.parent().is('ul, ol')) {
+    current = startEl.parent();
+  }
+  let next = current.next();
+  while (next.length && !next.is('h2, h3, h4, li, ul, ol')) {
+    if (next.is('p')) {
+      const text = next.text().trim();
+      if (text) {
+        result.push(text);
+      }
+    }
+    next = next.next();
+  }
+  return result.join('\n\n');
+}
+
+function parsePredictionPage(html, url) {
+  const $ = cheerio.load(html);
+  const title = $('h1#title_detail').text().trim() || $('h1').first().text().trim();
+  const sapo = $('.sapo_detail').text().trim();
+
+  let forceInfo = { home: '', away: '' };
+  const forceHeader = $('h2, h3').filter((i, el) => $(el).text().toLowerCase().includes('lực lượng')).first();
+  if (forceHeader.length) {
+    const nextList = forceHeader.nextAll('ul, ol').first();
+    if (nextList.length) {
+      nextList.find('li').each((i, li) => {
+        const text = $(li).text().trim();
+        const parts = text.split(':');
+        const prefix = parts[0] ? parts[0].trim() : '';
+        const mappedCode = getTeamCode(prefix);
+
+        if (mappedCode) {
+          if (i === 0) forceInfo.home = text;
+          else if (i === 1) forceInfo.away = text;
+        } else {
+          if (i === 0) forceInfo.home = text;
+          if (i === 1) forceInfo.away = text;
+        }
+      });
+    }
+  }
+
+  let formInfo = { home: '', away: '', h2h: '' };
+  const formHeader = $('h2, h3').filter((i, el) => $(el).text().toLowerCase().includes('phong độ')).first();
+  if (formHeader.length) {
+    const nextList = formHeader.nextAll('ul, ol').first();
+    if (nextList.length) {
+      nextList.find('li').each((i, li) => {
+        const text = $(li).text().trim();
+        if (text.toLowerCase().includes('lịch sử đối đầu') || text.toLowerCase().includes('đối đầu')) {
+          formInfo.h2h = text;
+        } else {
+          if (i === 0) formInfo.home = text;
+          if (i === 1) formInfo.away = text;
+        }
+      });
+    }
+  }
+
+  let predictionInfo = { goals: '', corners: '', cards: '', score: '' };
+  $('#content_detail').find('li, p, h3, h4').each((i, el) => {
+    const text = $(el).text().trim();
+    if (text.toLowerCase().includes('dự đoán số bàn thắng') || text.toLowerCase().includes('dự đoán bàn thắng')) {
+      const parsed = getParagraphsUntilNextHeadingOrLi($, $(el));
+      if (parsed && parsed.trim() && parsed.trim().length > predictionInfo.goals.length) {
+        predictionInfo.goals = parsed.trim();
+      }
+    } else if (text.toLowerCase().includes('dự đoán phạt góc')) {
+      const parsed = getParagraphsUntilNextHeadingOrLi($, $(el));
+      if (parsed && parsed.trim() && parsed.trim().length > predictionInfo.corners.length) {
+        predictionInfo.corners = parsed.trim();
+      }
+    } else if (text.toLowerCase().includes('dự đoán thẻ phạt')) {
+      const parsed = getParagraphsUntilNextHeadingOrLi($, $(el));
+      if (parsed && parsed.trim() && parsed.trim().length > predictionInfo.cards.length) {
+        predictionInfo.cards = parsed.trim();
+      }
+    } else if (text.toLowerCase().includes('dự đoán tỷ số') && !text.toLowerCase().includes('truyền thông')) {
+      let scoreText = '';
+      let current = $(el);
+      if ($(el).is('li') && $(el).parent().is('ul, ol')) {
+        current = $(el).parent();
+      }
+      let next = current.next();
+      while (next.length && !next.is('h2, h3, h4, li, ul, ol')) {
+        if (next.is('p')) {
+          scoreText += next.text().trim() + ' ';
+        }
+        next = next.next();
+      }
+      scoreText = scoreText.trim();
+      if (scoreText) {
+        if (scoreText.length > predictionInfo.score.length) {
+          predictionInfo.score = scoreText;
+        }
+      } else if (!predictionInfo.score) {
+        predictionInfo.score = text;
+      }
+    }
+  });
+
+  let mediaPrediction = {};
+  const mediaHeader = $('h3, h2').filter((i, el) => $(el).text().toLowerCase().includes('truyền thông') || $(el).text().toLowerCase().includes('sportskeeda')).first();
+  if (mediaHeader.length) {
+    const nextList = mediaHeader.nextAll('ul, ol').first();
+    if (nextList.length) {
+      nextList.find('li').each((i, li) => {
+        const text = $(li).text().trim();
+        const parts = text.split(':');
+        if (parts.length >= 2) {
+          const mediaName = parts[0].replace('dự đoán', '').trim();
+          mediaPrediction[mediaName] = parts.slice(1).join(':').trim();
+        } else {
+          mediaPrediction[`Media ${i + 1}`] = text;
+        }
+      });
+    }
+  }
+
+  let fullAnalysis = '';
+  const analysisHeader = $('h2').filter((i, el) => {
+    const txt = $(el).text().toLowerCase();
+    return txt.includes('nhận định') && !txt.includes('tỷ số') && !txt.includes('lực lượng') && !txt.includes('phong độ');
+  }).first();
+  if (analysisHeader.length) {
+    let paragraphs = [];
+    let next = analysisHeader.next();
+    while (next.length && !next.is('h2, h3, h4')) {
+      if (next.is('p')) {
+        const text = next.text().trim();
+        if (text) {
+          paragraphs.push(text);
+        }
+      }
+      next = next.next();
+    }
+    fullAnalysis = paragraphs.join('\n\n');
+  } else {
+    let paragraphs = [];
+    $('#content_detail').find('p').each((i, p) => {
+      const text = $(p).text().trim();
+      if (text && !text.toLowerCase().includes('sportskeeda') && !text.toLowerCase().includes('sports mole')) {
+        paragraphs.push(text);
+      }
+    });
+    fullAnalysis = paragraphs.slice(Math.floor(paragraphs.length / 2)).join('\n\n');
+  }
+
+  return {
+    source_url: url,
+    title,
+    sapo,
+    force_info: forceInfo,
+    form_info: formInfo,
+    prediction_info: predictionInfo,
+    media_prediction: mediaPrediction,
+    full_analysis: fullAnalysis
+  };
+}
+
+async function syncPredictionsToday(env) {
+  const startedAt = new Date().toISOString();
+  console.log('Starting syncPredictionsToday scraper...');
+  try {
+    // 1. Get matches and teams from Supabase
+    const [dbMatches, dbTeams] = await Promise.all([
+      getSupabaseRows(env, '/rest/v1/wc2026_matches?select=*'),
+      getSupabaseRows(env, '/rest/v1/wc2026_teams?select=*')
+    ]).catch(error => {
+      console.warn('Failed to fetch matches/teams from Supabase:', error.message);
+      return [[], []];
+    });
+
+    const todayYMD = getVietnamYMD(new Date());
+    const todayMatches = dbMatches.filter(m => getVietnamYMD(m.kickoff_utc) === todayYMD);
+
+    console.log(`Found ${todayMatches.length} matches scheduled for today (${todayYMD}).`);
+    if (todayMatches.length === 0) {
+      return {
+        status: 'success',
+        message: `No matches scheduled for today (${todayYMD}). Skipping scraper.`,
+        scraped_count: 0
+      };
+    }
+
+    const todayMatchTeams = todayMatches.map(m => ({
+      match: m,
+      homeCodes: getTeamNames(m.home_team_code, m.home_team_name),
+      awayCodes: getTeamNames(m.away_team_code, m.away_team_name),
+    }));
+
+    // 2. Fetch livescores page
+    const livescoresUrl = 'https://thethao247.vn/livescores/the-gioi/vo-dich-the-gioi/';
+    const response = await fetch(livescoresUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch livescores page: HTTP ${response.status}`);
+    }
+    const html = await response.text();
+    const $ = cheerio.load(html);
+
+    // Extract prediction links
+    const predictionLinks = [];
+    $('a').each((i, a) => {
+      const href = $(a).attr('href');
+      const text = $(a).text().trim();
+      if (href && href.includes('nhan-dinh') && href.endsWith('.html') && text.includes('Nhận định')) {
+        if (!predictionLinks.some(link => link.url === href)) {
+          predictionLinks.push({ url: href, text });
+        }
+      }
+    });
+
+    console.log(`Found ${predictionLinks.length} prediction links total on page.`);
+
+    // 3. Filter prediction links that match today's matches
+    const linksToScrape = [];
+    for (const link of predictionLinks) {
+      const textLower = link.text.toLowerCase();
+      const urlLower = link.url.toLowerCase();
+
+      const matchedMatch = todayMatchTeams.find(t => {
+        const homeMatched = t.homeCodes.some(name => {
+          const cleanName = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+          return textLower.includes(name) || urlLower.includes(cleanName);
+        });
+        const awayMatched = t.awayCodes.some(name => {
+          const cleanName = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+          return textLower.includes(name) || urlLower.includes(cleanName);
+        });
+        return homeMatched && awayMatched;
+      });
+
+      if (matchedMatch) {
+        linksToScrape.push({
+          link,
+          match: matchedMatch.match
+        });
+      }
+    }
+
+    console.log(`Filtered down to ${linksToScrape.length} links corresponding to today's matches.`);
+
+    let matchedCount = 0;
+    for (const item of linksToScrape) {
+      const { link, match } = item;
+      console.log(`Scraping prediction for match ID ${match.id} (${match.home_team_code} vs ${match.away_team_code}) from: ${link.url}`);
+      try {
+        const detailRes = await fetch(link.url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          }
+        });
+        if (!detailRes.ok) {
+          console.warn(`Failed to fetch prediction detail: HTTP ${detailRes.status}`);
+          continue;
+        }
+        const detailHtml = await detailRes.text();
+        const parsed = parsePredictionPage(detailHtml, link.url);
+
+        const mainScore = findScorePrediction(cheerio.load(detailHtml), match.home_team_code, match.home_team_name, match.away_team_code, match.away_team_name);
+        if (mainScore) {
+          console.log(`Found refined score prediction: "${mainScore}"`);
+          parsed.prediction_info.score = mainScore;
+        }
+
+        const predictionRow = {
+          match_id: match.id,
+          source_url: link.url,
+          title: parsed.title,
+          sapo: parsed.sapo,
+          force_info: parsed.force_info,
+          form_info: parsed.form_info,
+          prediction_info: parsed.prediction_info,
+          media_prediction: parsed.media_prediction,
+          full_analysis: parsed.full_analysis,
+          updated_at: new Date().toISOString()
+        };
+
+        await upsertSupabaseRows(env, '/rest/v1/wc2026_match_predictions', [predictionRow]);
+        console.log(`Successfully saved prediction for match ID ${match.id} to Supabase.`);
+        matchedCount++;
+      } catch (err) {
+        console.error(`Error scraping prediction link ${link.url}:`, err);
+      }
+    }
+
+    const finishedAt = new Date().toISOString();
+    const log = {
+      source: 'thethao247_predictions_worker',
+      status: 'success',
+      message: `Worker successfully scraped and saved ${matchedCount} predictions for today's matches.`,
+      rows_read: linksToScrape.length,
+      rows_written: matchedCount,
+      started_at: startedAt,
+      finished_at: finishedAt
+    };
+    
+    await upsertSupabaseRows(env, '/rest/v1/wc2026_api_sync_log', [log]);
+
+    return {
+      status: 'success',
+      message: log.message,
+      scraped_count: matchedCount
+    };
+  } catch (error) {
+    console.error('Error during prediction scraping sync:', error);
+    try {
+      await upsertSupabaseRows(env, '/rest/v1/wc2026_api_sync_log', [{
+        source: 'thethao247_predictions_worker',
+        status: 'error',
+        message: error.message,
+        started_at: startedAt,
+        finished_at: new Date().toISOString()
+      }]);
+    } catch (logErr) {
+      console.error('Failed to log error to sync logs:', logErr.message);
+    }
+    return {
+      status: 'error',
+      message: error.message
+    };
+  }
+}
+
+function getVietnamYMD(kickoffUtc) {
+  const matchDate = new Date(kickoffUtc);
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const parts = formatter.formatToParts(matchDate);
+  const year = parts.find(p => p.type === 'year').value;
+  const month = parts.find(p => p.type === 'month').value;
+  const day = parts.find(p => p.type === 'day').value;
+  return `${year}-${month}-${day}`;
 }

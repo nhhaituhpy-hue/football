@@ -55,6 +55,8 @@ export interface Match {
   home_team?: Team | null;
   away_team?: Team | null;
   result?: MatchResult;
+  events?: MatchEvent[];
+  highlight_url?: string | null;
 }
 
 export interface MatchEvent {
@@ -88,3 +90,35 @@ export interface WorkerEnvelope<T> {
   cached: boolean;
   updated_at: string;
 }
+
+export interface MatchPrediction {
+  match_id: number;
+  source_url: string | null;
+  title: string | null;
+  sapo: string | null;
+  force_info: {
+    home: string;
+    away: string;
+  } | null;
+  form_info: {
+    home: string;
+    away: string;
+    h2h: string;
+  } | null;
+  prediction_info: {
+    goals: string;
+    corners: string;
+    cards: string;
+    score: string;
+  } | null;
+  media_prediction: {
+    sportskeeda?: string;
+    sportsmole?: string;
+    standard?: string;
+    [key: string]: string | undefined;
+  } | null;
+  full_analysis: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+

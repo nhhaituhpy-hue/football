@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { Match, MatchEvent, MatchResult, MatchStatus, Team, WorkerEnvelope, WorkerLiveMatch, StandingRow } from '../types';
+import { Match, MatchEvent, MatchResult, MatchStatus, Team, WorkerEnvelope, WorkerLiveMatch, StandingRow, MatchPrediction } from '../types';
 
 const WORKER_API_BASE_URL = process.env.NEXT_PUBLIC_WORKER_API_BASE_URL || '';
 
@@ -42,6 +42,7 @@ interface SupabaseMatchRow {
   home_pen: number | null;
   away_pen: number | null;
   updated_at: string | null;
+  highlight_url: string | null;
 }
 
 interface SupabaseMatchEventRow {
@@ -106,6 +107,8 @@ function mapMatch(row: SupabaseMatchRow, teamsById: Map<number, Team>, live?: Wo
     home_team: homeTeam || null,
     away_team: awayTeam || null,
     result: resultFromMatch(row, live),
+    events: live?.events || undefined,
+    highlight_url: (row as SupabaseMatchRow & { highlight_url?: string | null }).highlight_url || null,
   };
 }
 
@@ -123,8 +126,11 @@ async function fetchWorkerJson<T>(path: string): Promise<T | null> {
   }
 }
 
-export async function fetchLiveMatches(): Promise<WorkerLiveMatch[]> {
-  return (await fetchWorkerJson<WorkerLiveMatch[]>('/live')) || [];
+export async function fetchLiveMatches(force = false): Promise<WorkerLiveMatch[]> {
+  if (typeof window === 'undefined' || process.env.NEXT_PHASE === 'phase-production-build') {
+    return [];
+  }
+  return (await fetchWorkerJson<WorkerLiveMatch[]>(force ? '/live?force=true' : '/live')) || [];
 }
 
 export async function fetchTeams(): Promise<Team[]> {
@@ -144,12 +150,12 @@ export async function fetchTeams(): Promise<Team[]> {
   return (data || []) as Team[];
 }
 
-export async function fetchMatches(): Promise<Match[]> {
+export async function fetchMatches(force = false): Promise<Match[]> {
   if (!IS_SUPABASE_CONFIGURED) return [];
 
   const [teams, liveMatches] = await Promise.all([
     fetchTeams(),
-    fetchLiveMatches(),
+    fetchLiveMatches(force),
   ]);
 
   const liveByMatchId = new Map(liveMatches.map((live) => [Number(live.match_id), live]));
@@ -198,8 +204,27 @@ export async function fetchMatchEvents(matchId: number): Promise<MatchEvent[]> {
   }));
 }
 
+export async function fetchMatchPrediction(matchId: number): Promise<MatchPrediction | null> {
+  if (!IS_SUPABASE_CONFIGURED) return null;
+
+  const { data, error } = await supabase
+    .from('wc2026_match_predictions')
+    .select('*')
+    .eq('match_id', matchId)
+    .single();
+
+  if (error) {
+    if (error.code !== 'PGRST116') {
+      console.warn('Supabase fetchMatchPrediction failed:', error);
+    }
+    return null;
+  }
+
+  return data as MatchPrediction;
+}
+
 export function subscribeMatches(callback: () => void) {
-  const interval = window.setInterval(callback, 30000);
+  const interval = window.setInterval(callback, 15000);
   return () => window.clearInterval(interval);
 }
 

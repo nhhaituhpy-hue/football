@@ -15,7 +15,7 @@ export default function Footer() {
   ];
 
   return (
-    <footer className="w-full py-8 text-center border-t border-card-border mt-auto bg-card-bg/20 backdrop-blur-md">
+    <footer className="w-full py-8 text-center border-t border-white/5 mt-auto bg-black/10 backdrop-blur-md">
       <div className="max-w-7xl mx-auto px-4 flex flex-col items-center gap-6">
         {/* Navigation Tabs */}
         <nav className="flex justify-center items-center gap-2 sm:gap-4 flex-wrap">
@@ -28,8 +28,8 @@ export default function Footer() {
                 href={item.path}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all duration-300 border ${
                   isActive
-                    ? 'bg-accent-win text-white border-accent-win shadow-md shadow-accent-win/20'
-                    : 'bg-card-bg/30 text-foreground/75 border-card-border hover:bg-card-bg/60 hover:text-foreground'
+                    ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white border-blue-500/30 shadow-md shadow-blue-500/20'
+                    : 'bg-white/5 text-foreground/75 border-white/10 hover:bg-white/10 hover:text-foreground'
                 }`}
               >
                 <Icon size={18} weight={isActive ? 'fill' : 'regular'} />

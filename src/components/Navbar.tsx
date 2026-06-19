@@ -2,8 +2,9 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Sun, Moon, SoccerBall, SpeakerHigh, SpeakerSlash } from '@phosphor-icons/react';
+import { Sun, Moon, SpeakerHigh, SpeakerSlash } from '@phosphor-icons/react';
 import { playGoalSound } from '../lib/sound';
+import Football3D from './Football3D';
 
 export default function Navbar() {
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -53,18 +54,18 @@ export default function Navbar() {
   };
 
   return (
-    <header className="sticky top-0 z-50 w-full fluent-acrylic border-b backdrop-blur-md">
+    <header className="sticky top-0 z-50 w-full navbar-glass">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 items-center justify-between">
           {/* Logo & Title Section */}
           <div className="flex items-center gap-3">
-            <Link href="/" className="flex items-center group">
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 via-sky-500 to-emerald-500 text-white shadow-md transition-transform group-hover:scale-105">
-                <SoccerBall size={22} weight="fill" className="animate-spin-slow" />
+            <Link href="/" className="flex items-center group" aria-label="Trang chủ">
+              <div className="flex items-center justify-center transition-transform group-hover:scale-110">
+                <Football3D size={42} />
               </div>
             </Link>
             <Link href="/" className="group flex items-center">
-              <span className="text-sm sm:text-base font-extrabold tracking-[0.1em] text-transparent bg-clip-text bg-gradient-to-r from-foreground via-foreground/95 to-accent-win uppercase whitespace-nowrap">
+              <span className="text-sm sm:text-base font-extrabold tracking-[0.1em] text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-purple-400 to-red-400 uppercase whitespace-nowrap">
                 FIFA WORLD CUP 2026
               </span>
             </Link>
@@ -75,7 +76,7 @@ export default function Navbar() {
             {/* Sound Toggle */}
             <button
               onClick={toggleSound}
-              className="flex h-10 w-10 items-center justify-center rounded-lg border border-card-border bg-card-bg/50 text-foreground/80 hover:text-foreground hover:bg-foreground/5 transition-colors cursor-pointer"
+              className="flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-foreground/80 hover:text-foreground hover:bg-white/10 transition-colors cursor-pointer backdrop-blur-sm"
               title={isMuted ? 'Bật âm báo bàn thắng' : 'Tắt âm báo bàn thắng'}
             >
               {isMuted ? <SpeakerSlash size={20} /> : <SpeakerHigh size={20} />}
@@ -84,7 +85,7 @@ export default function Navbar() {
             {/* Dark Mode Toggle */}
             <button
               onClick={toggleDarkMode}
-              className="flex h-10 w-10 items-center justify-center rounded-lg border border-card-border bg-card-bg/50 text-foreground/80 hover:text-foreground hover:bg-foreground/5 transition-colors cursor-pointer"
+              className="flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-foreground/80 hover:text-foreground hover:bg-white/10 transition-colors cursor-pointer backdrop-blur-sm"
               title={isDarkMode ? 'Chuyển sang chế độ sáng' : 'Chuyển sang chế độ tối'}
             >
               {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}

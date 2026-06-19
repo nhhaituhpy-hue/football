@@ -32,19 +32,332 @@
   --accent-hover: #4cc3ff;
 }
 
-body {
-  background-color: var(--background);
-  color: var(--foreground);
-  background-image: radial-gradient(at 0% 0%, rgba(30, 41, 59, 0.12) 0, transparent 40%),
-                    radial-gradient(at 100% 0%, rgba(0, 120, 212, 0.04) 0, transparent 40%);
-  background-attachment: fixed;
-  transition: background-color 0.3s ease, color 0.3s ease;
+/* ============================================
+   ANIMATED GRADIENT BACKGROUND (Blue ↔ Red)
+   ============================================ */
+@keyframes gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  25% {
+    background-position: 50% 100%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  75% {
+    background-position: 50% 0%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
 }
 
-.dark body {
-  background-image: radial-gradient(at 0% 0%, rgba(15, 23, 42, 0.4) 0, transparent 40%),
-                    radial-gradient(at 100% 0%, rgba(96, 205, 255, 0.03) 0, transparent 40%);
+body {
+  color: var(--foreground);
+  background: linear-gradient(
+    -45deg,
+    #0a1628,
+    #0d2847,
+    #1a0a2e,
+    #2d0a0a,
+    #4a0e0e,
+    #1a0a2e,
+    #0d2847,
+    #0a1628
+  );
+  background-size: 400% 400%;
+  animation: gradient-shift 12s ease infinite;
+  transition: color 0.3s ease;
+  min-height: 100vh;
 }
+
+/* Light mode gradient */
+html:not(.dark) body {
+  background: linear-gradient(
+    -45deg,
+    #dbeafe,
+    #c7d2fe,
+    #e8d5f5,
+    #fecdd3,
+    #fca5a5,
+    #e8d5f5,
+    #c7d2fe,
+    #dbeafe
+  );
+  background-size: 400% 400%;
+  animation: gradient-shift 12s ease infinite;
+}
+
+/* ============================================
+   LIQUID GLASS EFFECT - Match Cards
+   ============================================ */
+.liquid-glass {
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Subtle refraction highlight */
+.liquid-glass::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.02) 60%,
+    transparent 100%
+  );
+  border-radius: 16px 16px 0 0;
+  pointer-events: none;
+}
+
+/* Light mode liquid glass */
+html:not(.dark) .liquid-glass {
+  background: rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.2);
+}
+
+html:not(.dark) .liquid-glass::before {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.4) 0%,
+    rgba(255, 255, 255, 0.1) 60%,
+    transparent 100%
+  );
+}
+
+/* Liquid glass hover effect */
+.liquid-glass-hover {
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+              border-color 0.35s ease;
+}
+
+.liquid-glass-hover:hover {
+  transform: translateY(-3px) scale(1.005);
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+html:not(.dark) .liquid-glass-hover:hover {
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
+/* ============================================
+   3D LIQUID GLASS SCORE
+   ============================================ */
+.score-glass-3d {
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.15) 0%,
+    rgba(255, 255, 255, 0.05) 50%,
+    rgba(0, 0, 0, 0.05) 100%
+  );
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 14px;
+  box-shadow:
+    /* Outer shadow for 3D depth */
+    0 6px 20px rgba(0, 0, 0, 0.25),
+    0 2px 6px rgba(0, 0, 0, 0.15),
+    /* Inner highlight for glass convex effect */
+    inset 0 2px 4px rgba(255, 255, 255, 0.2),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.1),
+    /* Side highlights */
+    inset 2px 0 4px rgba(255, 255, 255, 0.08),
+    inset -2px 0 4px rgba(255, 255, 255, 0.08);
+  position: relative;
+  transform: perspective(600px) rotateX(2deg);
+  transform-style: preserve-3d;
+}
+
+/* Top glare for convex glass */
+.score-glass-3d::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 10%;
+  right: 10%;
+  height: 40%;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.25) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    transparent 100%
+  );
+  border-radius: 12px 12px 50% 50%;
+  pointer-events: none;
+}
+
+/* Bottom reflection */
+.score-glass-3d::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 15%;
+  right: 15%;
+  height: 20%;
+  background: linear-gradient(
+    0deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    transparent 100%
+  );
+  border-radius: 50% 50% 12px 12px;
+  pointer-events: none;
+}
+
+/* Light mode score glass */
+html:not(.dark) .score-glass-3d {
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.6) 0%,
+    rgba(255, 255, 255, 0.3) 50%,
+    rgba(200, 200, 220, 0.2) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow:
+    0 6px 20px rgba(0, 0, 0, 0.12),
+    0 2px 6px rgba(0, 0, 0, 0.08),
+    inset 0 2px 4px rgba(255, 255, 255, 0.5),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.05),
+    inset 2px 0 4px rgba(255, 255, 255, 0.2),
+    inset -2px 0 4px rgba(255, 255, 255, 0.2);
+}
+
+html:not(.dark) .score-glass-3d::before {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.6) 0%,
+    rgba(255, 255, 255, 0.2) 50%,
+    transparent 100%
+  );
+}
+
+/* ============================================
+   3D FOOTBALL IMAGE ANIMATION
+   ============================================ */
+
+/* Wrapper: handles floating up/down motion */
+@keyframes football-float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.football-3d-wrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  animation: football-float 3s ease-in-out infinite;
+  border-radius: 50%;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Spinner: 3D wobble rotation - tạo cảm giác quả bóng xoay trong không gian */
+@keyframes football-wobble {
+  0% {
+    transform: rotateY(0deg) rotateZ(0deg);
+  }
+  25% {
+    transform: rotateY(25deg) rotateZ(5deg);
+  }
+  50% {
+    transform: rotateY(0deg) rotateZ(0deg);
+  }
+  75% {
+    transform: rotateY(-25deg) rotateZ(-5deg);
+  }
+  100% {
+    transform: rotateY(0deg) rotateZ(0deg);
+  }
+}
+
+.football-3d-spinner {
+  transform-style: preserve-3d;
+  animation: football-wobble 5s ease-in-out infinite;
+  border-radius: 50%;
+  position: relative;
+  overflow: hidden;
+  -webkit-mask-image: -webkit-radial-gradient(white, black); /* Force clip on Safari mobile */
+}
+
+/* The ball image itself */
+.football-3d-image {
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* Glossy shine sweep animation - ánh sáng quét ngang quả bóng */
+@keyframes shine-sweep {
+  0%, 100% {
+    transform: translateX(-150%) rotate(25deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  50% {
+    transform: translateX(150%) rotate(25deg);
+    opacity: 1;
+  }
+  60%, 100% {
+    opacity: 0;
+  }
+}
+
+.football-3d-spinner::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -30%;
+  width: 35%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.15) 40%,
+    rgba(255, 255, 255, 0.35) 50%,
+    rgba(255, 255, 255, 0.15) 60%,
+    transparent 100%
+  );
+  animation: shine-sweep 5s ease-in-out infinite;
+  pointer-events: none;
+  border-radius: 50%;
+  z-index: 1;
+}
+
+/* ============================================
+   ORIGINAL STYLES (kept for compatibility)
+   ============================================ */
 
 /* Windows 11 Style Scrollbar */
 ::-webkit-scrollbar {
@@ -73,12 +386,17 @@ body {
   background: rgba(255, 255, 255, 0.25);
 }
 
-/* Fluent Design utilities */
+/* Fluent Design utilities (kept for Navbar/Footer compatibility) */
 .fluent-acrylic {
   backdrop-filter: blur(20px) saturate(125%);
-  background-color: var(--card-bg);
-  border: 1px solid var(--card-border);
+  background-color: rgba(20, 20, 26, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 4px 30px rgba(0, 0, 0, 0.02);
+}
+
+html:not(.dark) .fluent-acrylic {
+  background-color: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 .fluent-mica {
@@ -123,3 +441,95 @@ body {
 .live-indicator-pulse {
   animation: live-pulse 2s infinite;
 }
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hide scrollbar for IE, Edge and Firefox */
+.scrollbar-none {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+/* ============================================
+   NAVBAR GLASS STYLE
+   ============================================ */
+.navbar-glass {
+  background: rgba(10, 10, 18, 0.6);
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+}
+
+html:not(.dark) .navbar-glass {
+  background: rgba(255, 255, 255, 0.55);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+/* ============================================
+   LIVE MATCH CARD GLOW EFFECT
+   ============================================ */
+.liquid-glass-live {
+  background: rgba(255, 50, 50, 0.06);
+  border-color: rgba(255, 80, 80, 0.25) !important;
+  box-shadow:
+    0 8px 32px rgba(255, 50, 50, 0.12),
+    0 0 60px rgba(255, 50, 50, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+}
+
+html:not(.dark) .liquid-glass-live {
+  background: rgba(255, 50, 50, 0.08);
+  border-color: rgba(255, 80, 80, 0.3) !important;
+  box-shadow:
+    0 8px 32px rgba(255, 50, 50, 0.1),
+    0 0 60px rgba(255, 50, 50, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.15);
+}
+
+/* ============================================
+   CUSTOM MICRO-ANIMATIONS
+   ============================================ */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in {
+  animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slide-in {
+  from {
+    transform: translateY(-10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.animate-slide-in {
+  animation: slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+.animate-shake {
+  animation: shake 0.3s ease-in-out;
+}
+

@@ -2,7 +2,14 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Info } from '@phosphor-icons/react';
-import MatchCard from '../../components/MatchCard';
+import dynamic from 'next/dynamic';
+
+const MatchCard = dynamic(() => import('../../components/MatchCard'), {
+  ssr: false,
+  loading: () => (
+    <div className="h-40 rounded-xl bg-card-bg/25 border border-card-border/50 animate-pulse" />
+  )
+});
 import { fetchMatches, subscribeMatches } from '../../lib/dataManager';
 import { Match } from '../../types';
 
@@ -11,6 +18,7 @@ const KNOCKOUT_ORDER = ['R32', 'R16', 'QF', 'SF', '3rd', 'final'];
 export default function BracketPage() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeRound, setActiveRound] = useState<string>('R32');
   const [hasSetDefaultRound, setHasSetDefaultRound] = useState(false);
 
@@ -34,6 +42,7 @@ export default function BracketPage() {
     let active = true;
 
     async function loadData() {
+      setIsRefreshing(true);
       try {
         const data = await fetchMatches();
         if (!active) return;
@@ -96,7 +105,10 @@ export default function BracketPage() {
       } catch (error) {
         console.error(error);
       } finally {
-        if (active) setLoading(false);
+        if (active) {
+          setLoading(false);
+          setIsRefreshing(false);
+        }
       }
     }
 

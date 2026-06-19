@@ -5,9 +5,16 @@ import Image from 'next/image';
 import { Team, Match, StandingRow } from '../../types';
 import { fetchMatches, subscribeMatches, fetchTeams, calculateStandings } from '../../lib/dataManager';
 import { Trophy, Shield, Info, CaretDown, CaretUp } from '@phosphor-icons/react';
+import { Geist_Mono } from 'next/font/google';
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
 
 export default function StandingsPage() {
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [standings, setStandings] = useState<Record<string, StandingRow[]>>({});
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
@@ -15,6 +22,7 @@ export default function StandingsPage() {
     let active = true;
 
     async function loadData() {
+      setIsRefreshing(true);
       try {
         const [matches, teams] = await Promise.all([fetchMatches(), fetchTeams()]);
         if (!active) return;
@@ -27,7 +35,10 @@ export default function StandingsPage() {
       } catch (error) {
         console.error(error);
       } finally {
-        if (active) setLoading(false);
+        if (active) {
+          setLoading(false);
+          setIsRefreshing(false);
+        }
       }
     }
 
@@ -50,7 +61,7 @@ export default function StandingsPage() {
   const groups = Object.keys(standings).sort();
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className={`space-y-6 animate-fade-in ${geistMono.variable}`}>
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {[1, 2, 3].map((n) => (
