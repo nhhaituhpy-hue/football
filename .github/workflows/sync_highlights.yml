@@ -1,0 +1,31 @@
+name: Tự động đồng bộ Highlight FIFA
+
+on:
+  schedule:
+    # Chạy mỗi giờ một lần (ví dụ 1:00, 2:00, v.v. theo giờ UTC)
+    - cron: '0 * * * *'
+  workflow_dispatch: # Cho phép nhấn nút kích hoạt chạy thủ công trên GitHub
+
+jobs:
+  sync-highlights:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Highlights Scraper
+        run: node scripts/scrape_highlights.js
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
