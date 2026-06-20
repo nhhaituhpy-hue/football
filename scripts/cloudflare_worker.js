@@ -16,12 +16,97 @@ import * as cheerio from 'cheerio';
  */
 
 const CACHE_TTL_SECONDS = 60;
+const ALLOWED_ORIGINS = [
+  'https://lichworldcup.pages.dev',
+  'http://localhost:3000',
+  'http://localhost:3001',
+];
+
+function getCorsOrigin(request) {
+  const origin = request.headers.get('Origin') || '';
+  if (ALLOWED_ORIGINS.includes(origin)) return origin;
+  return null;
+}
+
+function makeCorsHeaders(request) {
+  const headers = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400',
+  };
+  const corsOrigin = getCorsOrigin(request);
+  if (corsOrigin) {
+    headers['Access-Control-Allow-Origin'] = corsOrigin;
+  }
+  return headers;
+}
+
+// Legacy constant kept for DO and non-request contexts
 const JSON_HEADERS = {
   'Content-Type': 'application/json; charset=utf-8',
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
+
+/**
+ * Verify Supabase Auth JWT and require admin role.
+ * Returns the decoded user payload on success, or a Response on failure.
+ */
+async function requireAdmin(request, env) {
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return new Response(JSON.stringify({ error: 'Missing or invalid Authorization header' }), {
+      status: 401,
+      headers: makeCorsHeaders(request),
+    });
+  }
+
+  const token = authHeader.slice(7);
+  const supabaseUrl = env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!supabaseUrl) {
+    return new Response(JSON.stringify({ error: 'Server misconfigured: missing Supabase URL' }), {
+      status: 500,
+      headers: makeCorsHeaders(request),
+    });
+  }
+
+  try {
+    // Verify token by calling Supabase Auth /auth/v1/user
+    const userRes = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'apikey': env.SUPABASE_SERVICE_ROLE_KEY || env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      },
+    });
+
+    if (!userRes.ok) {
+      return new Response(JSON.stringify({ error: 'Invalid or expired token' }), {
+        status: 401,
+        headers: makeCorsHeaders(request),
+      });
+    }
+
+    const user = await userRes.json();
+    const role = user.app_metadata?.role;
+
+    if (role !== 'admin') {
+      return new Response(JSON.stringify({ error: 'Forbidden: admin role required' }), {
+        status: 403,
+        headers: makeCorsHeaders(request),
+      });
+    }
+
+    return user; // success — return user data
+  } catch (err) {
+    console.error('JWT verification failed:', err.message);
+    return new Response(JSON.stringify({ error: 'Authentication service error' }), {
+      status: 500,
+      headers: makeCorsHeaders(request),
+    });
+  }
+}
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -201,7 +286,7 @@ const worker = {
   },
 
   async fetch(request, env, ctx) {
-    if (request.method === 'OPTIONS') return new Response(null, { headers: JSON_HEADERS });
+    if (request.method === 'OPTIONS') return new Response(null, { headers: makeCorsHeaders(request) });
 
     const url = new URL(request.url);
     const isCacheablePath = ['/live', '/matches', '/standings'].includes(url.pathname);
@@ -223,28 +308,37 @@ const worker = {
 
     try {
       if (url.pathname === '/sync-schedule') {
+        if (request.method !== 'POST') return jsonCors(request, { error: 'Method not allowed. Use POST.' }, 405);
+        const adminResult = await requireAdmin(request, env);
+        if (adminResult instanceof Response) return adminResult;
         await syncWc2026Schedule(env);
-        return json({ status: 'success', message: 'Schedule and teams synced successfully' });
+        return jsonCors(request, { status: 'success', message: 'Schedule and teams synced successfully' });
       }
 
       if (url.pathname === '/sync-predictions') {
+        if (request.method !== 'POST') return jsonCors(request, { error: 'Method not allowed. Use POST.' }, 405);
+        const adminResult = await requireAdmin(request, env);
+        if (adminResult instanceof Response) return adminResult;
         const result = await syncPredictionsToday(env);
-        return json(result);
+        return jsonCors(request, result);
       }
 
       if (url.pathname === '/sync-events') {
+        if (request.method !== 'POST') return jsonCors(request, { error: 'Method not allowed. Use POST.' }, 405);
+        const adminResult = await requireAdmin(request, env);
+        if (adminResult instanceof Response) return adminResult;
         const matchIdStr = url.searchParams.get('match_id');
         if (!matchIdStr) {
-          return json({ error: 'Missing match_id parameter' }, 400);
+          return jsonCors(request, { error: 'Missing match_id parameter' }, 400);
         }
         const matchId = parseInt(matchIdStr, 10);
         if (isNaN(matchId)) {
-          return json({ error: 'Invalid match_id' }, 400);
+          return jsonCors(request, { error: 'Invalid match_id' }, 400);
         }
 
         const dbMatches = await getSupabaseRows(env, `/rest/v1/wc2026_matches?id=eq.${matchId}`);
         if (!dbMatches || dbMatches.length === 0) {
-          return json({ error: 'Match not found' }, 404);
+          return jsonCors(request, { error: 'Match not found' }, 404);
         }
         const match = dbMatches[0];
 
@@ -252,7 +346,7 @@ const worker = {
         
         const events = await getSupabaseRows(env, `/rest/v1/wc2026_match_events?match_id=eq.${matchId}&provider=eq.thethao247`);
 
-        return json({ 
+        return jsonCors(request, { 
           status: 'success', 
           message: `Events sync completed for match ${matchId}`,
           events_count: events.length,
@@ -261,6 +355,9 @@ const worker = {
       }
 
       if (url.pathname === '/sync-events-today') {
+        if (request.method !== 'POST') return jsonCors(request, { error: 'Method not allowed. Use POST.' }, 405);
+        const adminResult = await requireAdmin(request, env);
+        if (adminResult instanceof Response) return adminResult;
         const now = new Date();
         const localTime = new Date(now.getTime() + (7 * 60 * 60 * 1000));
         const year = localTime.getUTCFullYear();
@@ -275,7 +372,7 @@ const worker = {
         const dbMatches = await getSupabaseRows(env, `/rest/v1/wc2026_matches?kickoff_utc=gte.${startOfToday}&kickoff_utc=lte.${endOfToday}`);
         
         if (!dbMatches || dbMatches.length === 0) {
-          return json({ status: 'success', message: 'No matches scheduled for today', synced_matches: [] });
+          return jsonCors(request, { status: 'success', message: 'No matches scheduled for today', synced_matches: [] });
         }
 
         const results = [];
@@ -291,7 +388,7 @@ const worker = {
           }
         }
 
-        return json({
+        return jsonCors(request, {
           status: 'success',
           message: `Synced events for ${results.length} matches today`,
           synced_matches: results
@@ -299,9 +396,12 @@ const worker = {
       }
 
       if (url.pathname === '/trigger-highlights-workflow') {
+        if (request.method !== 'POST') return jsonCors(request, { error: 'Method not allowed. Use POST.' }, 405);
+        const adminResult = await requireAdmin(request, env);
+        if (adminResult instanceof Response) return adminResult;
         const token = env.GITHUB_PAT;
         if (!token) {
-          return json({ error: 'Missing GITHUB_PAT secret/environment variable in worker configuration' }, 500);
+          return jsonCors(request, { error: 'Missing GITHUB_PAT secret/environment variable in worker configuration' }, 500);
         }
 
         const githubUrl = 'https://api.github.com/repos/nhhaituhpy-hue/football/actions/workflows/sync_highlights.yml/dispatches';
@@ -320,12 +420,64 @@ const worker = {
         if (!response.ok) {
           const errText = await response.text();
           console.error(`GitHub API error: ${response.status} - ${errText}`);
-          return json({ error: `GitHub API error: ${response.status} - ${errText}` }, 500);
+          return jsonCors(request, { error: `GitHub API error: ${response.status} - ${errText}` }, 500);
         }
 
-        return json({
+        return jsonCors(request, {
           status: 'success',
           message: 'GitHub Action highlight sync workflow triggered successfully'
+        });
+      }
+
+      // Admin endpoint: update or delete highlight URL for a match
+      if (url.pathname === '/admin/highlight') {
+        if (request.method !== 'POST' && request.method !== 'DELETE') {
+          return jsonCors(request, { error: 'Method not allowed. Use POST or DELETE.' }, 405);
+        }
+        const adminResult = await requireAdmin(request, env);
+        if (adminResult instanceof Response) return adminResult;
+
+        let body;
+        try {
+          body = await request.json();
+        } catch {
+          return jsonCors(request, { error: 'Invalid JSON body' }, 400);
+        }
+
+        const matchId = body.match_id;
+        if (!matchId) {
+          return jsonCors(request, { error: 'Missing match_id in body' }, 400);
+        }
+
+        const supabaseUrl = env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL;
+        const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!supabaseUrl || !supabaseKey) {
+          return jsonCors(request, { error: 'Server misconfigured: missing Supabase credentials' }, 500);
+        }
+
+        const highlightUrl = request.method === 'DELETE' ? null : (body.highlight_url?.trim() || null);
+
+        const patchRes = await fetch(`${supabaseUrl}/rest/v1/wc2026_matches?id=eq.${matchId}`, {
+          method: 'PATCH',
+          headers: {
+            apikey: supabaseKey,
+            Authorization: `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal',
+          },
+          body: JSON.stringify({ highlight_url: highlightUrl, updated_at: new Date().toISOString() }),
+        });
+
+        if (!patchRes.ok) {
+          const errText = await patchRes.text();
+          return jsonCors(request, { error: `Failed to update highlight: ${errText}` }, 500);
+        }
+
+        return jsonCors(request, {
+          status: 'success',
+          message: highlightUrl ? 'Highlight URL updated' : 'Highlight URL removed',
+          match_id: matchId,
+          highlight_url: highlightUrl,
         });
       }
 
@@ -396,6 +548,10 @@ export default worker;
 
 function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: JSON_HEADERS });
+}
+
+function jsonCors(request, payload, status = 200) {
+  return new Response(JSON.stringify(payload), { status, headers: makeCorsHeaders(request) });
 }
 
 async function refreshLiveCacheAndSync(env, doInstance) {
@@ -1760,38 +1916,6 @@ function dataHasChanged(oldData, newData) {
   return false;
 }
 
-function dataHasChangedIncludingMinutes(oldData, newData) {
-  if (!oldData || !newData) return true;
-  if (!Array.isArray(oldData) || !Array.isArray(newData)) return true;
-  if (oldData.length !== newData.length) return true;
-  for (let i = 0; i < oldData.length; i++) {
-    const o = oldData[i];
-    const n = newData[i];
-    if (!o || !n) return true;
-    if (o.match_id !== n.match_id) return true;
-    if (o.status !== n.status) return true;
-    if (o.phase !== n.phase) return true;
-    if (o.minute !== n.minute) return true;
-    if (o.home_score !== n.home_score) return true;
-    if (o.away_score !== n.away_score) return true;
-    if (o.home_pen !== n.home_pen) return true;
-    if (o.away_pen !== n.away_pen) return true;
-
-    const oRedHome = o.red_cards?.home ?? 0;
-    const nRedHome = n.red_cards?.home ?? 0;
-    const oRedAway = o.red_cards?.away ?? 0;
-    const nRedAway = n.red_cards?.away ?? 0;
-    if (oRedHome !== nRedHome || oRedAway !== nRedAway) return true;
-
-    const oYellowHome = o.yellow_cards?.home ?? 0;
-    const nYellowHome = n.yellow_cards?.home ?? 0;
-    const oYellowAway = o.yellow_cards?.away ?? 0;
-    const nYellowAway = n.yellow_cards?.away ?? 0;
-    if (oYellowHome !== nYellowHome || oYellowAway !== nYellowAway) return true;
-  }
-  return false;
-}
-
 // --- World Cup 2026 Daily Prediction Scraper Logic ---
 
 const nameMap = {
@@ -2101,14 +2225,12 @@ async function syncPredictionsToday(env) {
   const startedAt = new Date().toISOString();
   console.log('Starting syncPredictionsToday scraper...');
   try {
-    // 1. Get matches and teams from Supabase
-    const [dbMatches, dbTeams] = await Promise.all([
-      getSupabaseRows(env, '/rest/v1/wc2026_matches?select=*'),
-      getSupabaseRows(env, '/rest/v1/wc2026_teams?select=*')
-    ]).catch(error => {
-      console.warn('Failed to fetch matches/teams from Supabase:', error.message);
-      return [[], []];
-    });
+    // 1. Get matches from Supabase
+    const dbMatches = await getSupabaseRows(env, '/rest/v1/wc2026_matches?select=*')
+      .catch(error => {
+        console.warn('Failed to fetch matches from Supabase:', error.message);
+        return [];
+      });
 
     const todayYMD = getVietnamYMD(new Date());
     const todayMatches = dbMatches.filter(m => getVietnamYMD(m.kickoff_utc) === todayYMD);

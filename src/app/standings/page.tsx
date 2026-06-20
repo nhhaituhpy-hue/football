@@ -1,10 +1,9 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import Image from 'next/image';
-import { Team, Match, StandingRow } from '../../types';
-import { fetchMatches, subscribeMatches, fetchTeams, calculateStandings } from '../../lib/dataManager';
-import { Trophy, Shield, Info, CaretDown, CaretUp } from '@phosphor-icons/react';
+import { useTournamentData } from '../../data/hooks/use-tournament-data';
+import { Shield, Info, CaretDown, CaretUp } from '@phosphor-icons/react';
 import { Geist_Mono } from 'next/font/google';
 
 const geistMono = Geist_Mono({
@@ -13,48 +12,13 @@ const geistMono = Geist_Mono({
 });
 
 export default function StandingsPage() {
-  const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [standings, setStandings] = useState<Record<string, StandingRow[]>>({});
+  const { standings, loading } = useTournamentData();
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
-
-  useEffect(() => {
-    let active = true;
-
-    async function loadData() {
-      setIsRefreshing(true);
-      try {
-        const [matches, teams] = await Promise.all([fetchMatches(), fetchTeams()]);
-        if (!active) return;
-        const nextStandings = calculateStandings(matches, teams);
-        setStandings(nextStandings);
-        setExpandedGroups((prev) => {
-          if (Object.keys(prev).length > 0) return prev;
-          return Object.fromEntries(Object.keys(nextStandings).map((group) => [group, true]));
-        });
-      } catch (error) {
-        console.error(error);
-      } finally {
-        if (active) {
-          setLoading(false);
-          setIsRefreshing(false);
-        }
-      }
-    }
-
-    loadData();
-    const unsubscribe = subscribeMatches(loadData);
-
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, []);
 
   const toggleGroup = (group: string) => {
     setExpandedGroups((prev) => ({
       ...prev,
-      [group]: !prev[group],
+      [group]: prev[group] === false,
     }));
   };
 
@@ -85,7 +49,7 @@ export default function StandingsPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {groups.map((group) => {
             const rows = standings[group] || [];
-            const isExpanded = expandedGroups[group];
+            const isExpanded = expandedGroups[group] !== false;
 
             return (
               <div key={group} className="rounded-xl border border-card-border bg-card-bg/40 overflow-hidden shadow-sm">

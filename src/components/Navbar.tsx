@@ -28,7 +28,8 @@ export default function Navbar() {
     queueMicrotask(() => setIsDarkMode(nextIsDarkMode));
 
     // Khởi tạo âm thanh
-    setIsMuted(localStorage.getItem('sound_muted') === 'true');
+    const nextIsMuted = localStorage.getItem('sound_muted') === 'true';
+    queueMicrotask(() => setIsMuted(nextIsMuted));
   }, []);
 
   const toggleDarkMode = () => {

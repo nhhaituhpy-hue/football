@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
-import { Match, StandingRow } from '../types';
-import { fetchMatches, subscribeMatches, fetchTeams, calculateStandings } from '../lib/dataManager';
+import React, { useEffect, useState, useMemo } from 'react';
+import { Match } from '../types';
+import { useTournamentData } from '../data/hooks/use-tournament-data';
 import { playGoalSound } from '../lib/sound';
 import dynamic from 'next/dynamic';
 
@@ -30,8 +30,6 @@ const MatchCard = dynamic(() => import('../components/MatchCard'), {
   )
 });
 import { 
-  SoccerBall, 
-  CalendarBlank, 
   Info
 } from '@phosphor-icons/react';
 
@@ -55,17 +53,42 @@ function getUniqueDates(allMatches: Match[]) {
 }
 
 export default function DashboardPage() {
-  const [matches, setMatches] = useState<Match[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [selectedDate, setSelectedDate] = useState<string>('');
-  const [hasSetDefaultDate, setHasSetDefaultDate] = useState(false);
-  const [standings, setStandings] = useState<Record<string, StandingRow[]>>({});
-
-
+  const { matches, standings, loading } = useTournamentData();
+  const [selectedDate, setSelectedDate] = useState<string | undefined>(undefined);
 
   const activeDateRef = React.useRef<HTMLButtonElement | null>(null);
   const prevMatchesRef = React.useRef<Match[]>([]);
+
+  // Compute activeDate reactively
+  const activeDate = useMemo(() => {
+    if (selectedDate !== undefined) return selectedDate;
+    
+    const dates = getUniqueDates(matches);
+    if (dates.length === 0) return '';
+    
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    const parts = formatter.formatToParts(now);
+    const year = parts.find(p => p.type === 'year')?.value;
+    const month = parts.find(p => p.type === 'month')?.value;
+    const day = parts.find(p => p.type === 'day')?.value;
+    const todayStr = `${year}-${month}-${day}`;
+
+    if (dates.includes(todayStr)) {
+      return todayStr;
+    } else {
+      const nextMatchDate = dates.find(d => d >= todayStr);
+      if (nextMatchDate) {
+        return nextMatchDate;
+      }
+      return dates[0];
+    }
+  }, [matches, selectedDate]);
 
   // Tự động cuộn ngày được chọn vào giữa thanh cuộn
   useEffect(() => {
@@ -79,106 +102,32 @@ export default function DashboardPage() {
       }, 150);
       return () => clearTimeout(timer);
     }
-  }, [selectedDate, loading]);
+  }, [activeDate, loading]);
 
-  const isMountedRef = React.useRef(true);
+  // So sánh tỉ số cũ và mới để phát âm thanh báo bàn thắng
   useEffect(() => {
-    isMountedRef.current = true;
-    return () => {
-      isMountedRef.current = false;
-    };
-  }, []);
+    if (loading || matches.length === 0) return;
 
-  // Load và subscribe realtime dữ liệu
-  const loadData = useCallback(async (force = false) => {
-    setIsRefreshing(true);
-    try {
-      const [data, teams] = await Promise.all([fetchMatches(force), fetchTeams()]);
-      if (!isMountedRef.current) return;
-
-      // So sánh tỉ số cũ và mới để phát âm thanh báo bàn thắng
-      if (prevMatchesRef.current.length > 0) {
-        let scoreChanged = false;
-        data.forEach((match) => {
-          const prevMatch = prevMatchesRef.current.find(m => m.id === match.id);
-          if (prevMatch && prevMatch.result && match.result) {
-            const isLive = match.result.status === 'live';
-            const homeIncreased = match.result.home_score > prevMatch.result.home_score;
-            const awayIncreased = match.result.away_score > prevMatch.result.away_score;
-            if (isLive && (homeIncreased || awayIncreased)) {
-              scoreChanged = true;
-            }
+    if (prevMatchesRef.current.length > 0) {
+      let scoreChanged = false;
+      matches.forEach((match) => {
+        const prevMatch = prevMatchesRef.current.find(m => m.id === match.id);
+        if (prevMatch && prevMatch.result && match.result) {
+          const isLive = match.result.status === 'live';
+          const homeIncreased = match.result.home_score > prevMatch.result.home_score;
+          const awayIncreased = match.result.away_score > prevMatch.result.away_score;
+          if (isLive && (homeIncreased || awayIncreased)) {
+            scoreChanged = true;
           }
-        });
-
-        if (scoreChanged) {
-          playGoalSound();
         }
-      }
-      prevMatchesRef.current = data;
+      });
 
-      setMatches(data);
-      
-      const currentStandings = calculateStandings(data, teams);
-      setStandings(currentStandings);
-      
-      // Thiết lập ngày mặc định là ngày hiện tại hoặc ngày thi đấu gần nhất
-      if (data.length > 0 && !hasSetDefaultDate) {
-        // Lấy danh sách các ngày duy nhất
-        const dates = getUniqueDates(data);
-        if (dates.length > 0) {
-          const now = new Date();
-          const formatter = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'Asia/Ho_Chi_Minh',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit'
-          });
-          const parts = formatter.formatToParts(now);
-          const year = parts.find(p => p.type === 'year')?.value;
-          const month = parts.find(p => p.type === 'month')?.value;
-          const day = parts.find(p => p.type === 'day')?.value;
-          const todayStr = `${year}-${month}-${day}`;
-
-          if (dates.includes(todayStr)) {
-            setSelectedDate(todayStr);
-          } else {
-            // Tìm ngày thi đấu gần nhất tiếp theo
-            const nextMatchDate = dates.find(d => d >= todayStr);
-            if (nextMatchDate) {
-              setSelectedDate(nextMatchDate);
-            } else {
-              // Fallback về ngày đầu tiên nếu giải đấu đã kết thúc
-              setSelectedDate(dates[0]);
-            }
-          }
-          setHasSetDefaultDate(true);
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      if (isMountedRef.current) {
-        setLoading(false);
-        setIsRefreshing(false);
+      if (scoreChanged) {
+        playGoalSound();
       }
     }
-  }, [hasSetDefaultDate]);
-
-  useEffect(() => {
-    loadData();
-
-    // Đăng ký realtime
-    const unsubscribe = subscribeMatches(() => {
-      loadData();
-    });
-
-    return () => {
-      unsubscribe();
-    };
-  }, [loadData]);
-
-
+    prevMatchesRef.current = matches;
+  }, [matches, loading]);
 
   // Lấy danh sách các ngày thi đấu duy nhất (định dạng DD/MM)
   const datesList = getUniqueDates(matches);
@@ -203,7 +152,7 @@ export default function DashboardPage() {
       return `${year}-${month}-${day}`;
     })();
     
-    const matchDateOk = selectedDate ? matchDateYMD === selectedDate : true;
+    const matchDateOk = activeDate ? matchDateYMD === activeDate : true;
 
     return matchDateOk;
   });
@@ -257,10 +206,10 @@ export default function DashboardPage() {
         ) : datesList.length > 0 && (
           <div className="flex items-center gap-2 overflow-x-auto pb-2 -mx-2 px-2 scrollbar-none snap-x">
             <button
-              ref={selectedDate === '' ? activeDateRef : undefined}
+              ref={activeDate === '' ? activeDateRef : undefined}
               onClick={() => setSelectedDate('')}
               className={`snap-start px-4 py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
-                selectedDate === ''
+                activeDate === ''
                   ? 'bg-accent-win text-white border-accent-win shadow-sm'
                   : 'bg-card-bg/30 text-foreground/75 border-card-border hover:bg-card-bg/60 hover:text-foreground'
               }`}
@@ -269,8 +218,8 @@ export default function DashboardPage() {
             </button>
             {datesList.map((dateStr) => {
               // Format ngày hiển thị dạng: "Ngày DD/MM" từ dateStr dạng YYYY-MM-DD
-              const isSelected = selectedDate === dateStr;
-              const [y, m, d] = dateStr.split('-');
+              const isSelected = activeDate === dateStr;
+              const [, m, d] = dateStr.split('-');
               const displayDate = `${d}/${m}`;
               return (
                 <button

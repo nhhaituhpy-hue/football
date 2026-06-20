@@ -2,6 +2,9 @@
   "name": "football",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -9,7 +12,7 @@
     "lint": "eslint",
     "deploy": "npm run build && node scripts/fix_static_paths.js && npx wrangler pages deploy out --project-name lichworldcup --branch main",
     "sync:wc2026": "node scripts/sync_wc2026api.js",
-    "worker:dev": "npx wrangler dev scripts/cloudflare_worker.js --config wrangler.worker.toml",
+    "worker:dev": "npx wrangler dev --config wrangler.worker.toml",
     "worker:deploy": "npx wrangler deploy --config wrangler.worker.toml",
     "gpush": "git add . && git commit -m \"auto commit\" && git push origin main"
   },
@@ -24,13 +27,14 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "24.13.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
+    "puppeteer": "^22.12.0",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "puppeteer": "^22.12.0"
+    "wrangler": "4.103.0"
   }
 }

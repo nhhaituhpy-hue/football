@@ -4,6 +4,7 @@ import React from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { Match, MatchPrediction } from '../../../types';
+import { useMatchAnalysis } from '../../../data/hooks/use-match-analysis';
 import { 
   Calendar, 
   MapPin, 
@@ -11,11 +12,7 @@ import {
   CaretLeft, 
   Users, 
   ArrowClockwise, 
-  FileText, 
-  TrendUp,
-  Warning,
-  Flag,
-  SoccerBall
+  FileText
 } from '@phosphor-icons/react';
 
 interface AnalysisClientProps {
@@ -23,7 +20,36 @@ interface AnalysisClientProps {
   prediction: MatchPrediction | null;
 }
 
-export default function AnalysisClient({ match, prediction }: AnalysisClientProps) {
+export default function AnalysisClient({ match: initialMatch, prediction: initialPrediction }: AnalysisClientProps) {
+  const matchId = initialMatch?.id || -1;
+  const { match, prediction } = useMatchAnalysis(
+    matchId,
+    initialMatch,
+    initialPrediction
+  );
+
+  const lastUpdated = React.useMemo(() => {
+    const dates = [
+      match?.result?.updated_at,
+      prediction?.updated_at
+    ].filter(Boolean) as string[];
+    
+    if (dates.length === 0) return null;
+    
+    const latestDate = new Date(Math.max(...dates.map(d => new Date(d).getTime())));
+    return latestDate.toLocaleTimeString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+      timeZone: 'Asia/Ho_Chi_Minh'
+    }) + ' ' + latestDate.toLocaleDateString('vi-VN', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      timeZone: 'Asia/Ho_Chi_Minh'
+    });
+  }, [match?.result?.updated_at, prediction?.updated_at]);
 
   if (!match) {
     return (
@@ -78,15 +104,22 @@ export default function AnalysisClient({ match, prediction }: AnalysisClientProp
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6 pb-12 animate-fade-in overflow-x-hidden px-1">
       {/* Breadcrumb & Back button */}
-      <div className="flex items-center justify-between w-full min-w-0 gap-2">
-        <div className="flex items-center gap-2 text-xs text-foreground/50 truncate">
-          <Link href="/" className="hover:text-accent-win transition-colors">Trang chủ</Link>
-          <span>/</span>
-          <span className="text-foreground/70 font-medium truncate">Nhận định trận đấu</span>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between w-full min-w-0 gap-2">
+        <div className="flex flex-col gap-1 min-w-0">
+          <div className="flex items-center gap-2 text-xs text-foreground/50 truncate">
+            <Link href="/" className="hover:text-accent-win transition-colors">Trang chủ</Link>
+            <span>/</span>
+            <span className="text-foreground/70 font-medium truncate">Nhận định trận đấu</span>
+          </div>
+          {lastUpdated && (
+            <div className="text-[10px] text-foreground/40 font-medium">
+              Dữ liệu cập nhật lúc: {lastUpdated}
+            </div>
+          )}
         </div>
         <Link 
           href="/" 
-          className="inline-flex items-center gap-1 text-xs font-bold text-foreground/70 hover:text-accent-win transition-colors px-3 py-1.5 rounded bg-card-bg/40 border border-card-border/60 hover:border-accent-win/35 shadow-sm shrink-0"
+          className="inline-flex items-center gap-1 text-xs font-bold text-foreground/70 hover:text-accent-win transition-colors px-3 py-1.5 rounded bg-card-bg/40 border border-card-border/60 hover:border-accent-win/35 shadow-sm shrink-0 self-start sm:self-center"
         >
           <CaretLeft size={14} weight="bold" />
           <span>Quay lại bảng lịch đấu</span>
@@ -122,12 +155,38 @@ export default function AnalysisClient({ match, prediction }: AnalysisClientProp
           </div>
 
           {/* Versus / Match details */}
-          <div className="flex flex-col items-center px-0.5 sm:px-4 text-center border-x border-card-border/60 py-0 min-w-0">
-            <div className="px-1.5 py-0.5 rounded bg-accent-win/10 border border-accent-win/20 text-accent-win text-[8px] sm:text-[10px] font-extrabold uppercase tracking-wider mb-1 max-w-full truncate">
+          <div className="flex flex-col items-center px-0.5 sm:px-4 text-center border-x border-card-border/60 py-0 min-w-0 justify-center">
+            <div className="px-1.5 py-0.5 rounded bg-accent-win/10 border border-accent-win/20 text-accent-win text-[8px] sm:text-[10px] font-extrabold uppercase tracking-wider mb-1.5 max-w-full truncate">
               {match.round}
             </div>
-            <span className="text-base sm:text-3xl font-black text-foreground/20 italic tracking-wider leading-none">VS</span>
-            <div className="flex flex-col items-center gap-0.5 mt-1 text-[8px] sm:text-[11px] font-semibold text-foreground/65 max-w-full">
+            {match.result && (match.result.status === 'live' || match.result.status === 'finished') ? (
+              <div className="flex flex-col items-center mb-1.5">
+                <div className="flex items-center gap-2 text-xl sm:text-3xl font-black tracking-wider leading-none">
+                  <span className={match.result.status === 'live' ? 'text-red-400 drop-shadow-[0_0_8px_rgba(255,80,80,0.5)]' : 'text-foreground'}>
+                    {match.result.home_score}
+                  </span>
+                  <span className="text-foreground/30 font-light text-lg sm:text-2xl">:</span>
+                  <span className={match.result.status === 'live' ? 'text-red-400 drop-shadow-[0_0_8px_rgba(255,80,80,0.5)]' : 'text-foreground'}>
+                    {match.result.away_score}
+                  </span>
+                </div>
+                {match.result.status === 'live' && (
+                  <div className="flex items-center gap-1 mt-1.5 px-2 py-0.5 rounded-md text-[8px] sm:text-[10px] font-bold border bg-red-500/10 text-red-400 live-indicator-pulse border-red-500/20">
+                    <span>
+                      {match.result.phase === 'HT' ? 'HT' : `${match.result.current_minute || 1}'`}
+                    </span>
+                  </div>
+                )}
+                {match.result.status === 'finished' && (
+                  <span className="mt-1.5 px-1.5 py-0.5 rounded bg-white/5 text-foreground/60 text-[8px] sm:text-[9px] font-bold uppercase tracking-wider">
+                    Hết giờ
+                  </span>
+                )}
+              </div>
+            ) : (
+              <span className="text-base sm:text-3xl font-black text-foreground/20 italic tracking-wider leading-none mb-1.5">VS</span>
+            )}
+            <div className="flex flex-col items-center gap-0.5 text-[8px] sm:text-[11px] font-semibold text-foreground/65 max-w-full">
               <div className="flex items-center gap-0.5">
                 <Calendar size={11} className="text-accent-win shrink-0" />
                 <span className="truncate">{formatMatchHour(match.match_time)}</span>

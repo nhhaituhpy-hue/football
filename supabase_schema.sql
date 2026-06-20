@@ -12,6 +12,7 @@ drop table if exists matches cascade;
 drop table if exists teams cascade;
 
 drop table if exists wc2026_api_sync_log cascade;
+drop table if exists wc2026_match_predictions cascade;
 drop table if exists wc2026_match_events cascade;
 drop table if exists wc2026_match_live_snapshots cascade;
 drop table if exists wc2026_matches cascade;
@@ -52,6 +53,7 @@ create table wc2026_matches (
   away_score integer,
   home_pen integer,
   away_pen integer,
+  highlight_url text,
   source_payload jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -89,6 +91,20 @@ create table wc2026_match_events (
   unique (provider, provider_event_id)
 );
 
+create table wc2026_match_predictions (
+  match_id bigint primary key references wc2026_matches(id) on delete cascade,
+  source_url text,
+  title text,
+  sapo text,
+  force_info jsonb not null default '{}'::jsonb,
+  form_info jsonb not null default '{}'::jsonb,
+  prediction_info jsonb not null default '{}'::jsonb,
+  media_prediction jsonb not null default '{}'::jsonb,
+  full_analysis text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table wc2026_api_sync_log (
   id bigserial primary key,
   source text not null,
@@ -105,11 +121,13 @@ create index wc2026_matches_round_group_idx on wc2026_matches (round_code, group
 create index wc2026_matches_status_idx on wc2026_matches (status);
 create index wc2026_live_status_idx on wc2026_match_live_snapshots (status, updated_at desc);
 create index wc2026_events_match_idx on wc2026_match_events (match_id, minute);
+create index wc2026_predictions_updated_idx on wc2026_match_predictions (updated_at desc);
 
 alter table wc2026_teams enable row level security;
 alter table wc2026_matches enable row level security;
 alter table wc2026_match_live_snapshots enable row level security;
 alter table wc2026_match_events enable row level security;
+alter table wc2026_match_predictions enable row level security;
 alter table wc2026_api_sync_log enable row level security;
 
 create policy "Public read wc2026 teams"
@@ -132,12 +150,23 @@ create policy "Public read wc2026 match events"
   to anon, authenticated
   using (true);
 
+create policy "Public read wc2026 match predictions"
+  on wc2026_match_predictions for select
+  to anon, authenticated
+  using (true);
+
 grant usage on schema public to anon, authenticated;
+
+-- Public clients may read fixture data only. All writes must go through trusted
+-- server-side paths such as the Cloudflare Worker using the service-role key.
+revoke insert, update, delete, truncate on all tables in schema public from anon, authenticated;
+
 grant select on table
   wc2026_teams,
   wc2026_matches,
   wc2026_match_live_snapshots,
-  wc2026_match_events
+  wc2026_match_events,
+  wc2026_match_predictions
 to anon, authenticated;
 
 commit;

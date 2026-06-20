@@ -1,29 +1,39 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import Image from 'next/image';
 import { supabase } from '../../lib/supabase';
-import { fetchMatches } from '../../lib/dataManager';
+import { fetchMatchesFromDb } from '../../data/supabase/matches.repository';
+import { fetchTeamsFromDb } from '../../data/supabase/teams.repository';
+import { mergeMatchData } from '../../data/domain/merge-match-data';
 import { Match } from '../../types';
 import { 
-  Key, 
+  SignIn, 
   MagnifyingGlass, 
   FloppyDisk, 
   Trash, 
   Eye, 
   CheckCircle, 
   Warning, 
-  Lock, 
   ArrowClockwise,
   FilmStrip,
   Cpu,
-  Lightning
+  Lightning,
+  Envelope,
+  LockKey,
+  SignOut
 } from '@phosphor-icons/react';
+
+const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_API_BASE_URL || 'https://lichworldcup-live.nhhai-tuhpy.workers.dev';
 
 export default function AdminPage() {
   // Authentication states
-  const [pin, setPin] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [authError, setAuthError] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState('');
 
   // Match management states
   const [matches, setMatches] = useState<Match[]>([]);
@@ -43,38 +53,65 @@ export default function AdminPage() {
   // Toast notifications
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  // Check authentication on mount
-  useEffect(() => {
-    const savedAuth = sessionStorage.getItem('add_hl_auth');
-    if (savedAuth === 'true') {
-      setIsAuthenticated(true);
-    }
+  // Get access token for Worker API calls
+  const getAccessToken = useCallback(async (): Promise<string | null> => {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token ?? null;
   }, []);
 
-  // Fetch matches once authenticated
-  useEffect(() => {
-    if (isAuthenticated) {
-      loadMatches();
-    }
-  }, [isAuthenticated]);
+  const showToast = useCallback((type: 'success' | 'error', message: string) => {
+    setToast({ type, message });
+    setTimeout(() => setToast(null), 4000);
+  }, []);
 
-  const loadMatches = async () => {
+  // Check authentication on mount
+  useEffect(() => {
+    const checkSession = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        const role = data.session.user.app_metadata?.role;
+        setIsAuthenticated(true);
+        setIsAdmin(role === 'admin');
+      }
+      setAuthLoading(false);
+    };
+
+    checkSession();
+
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        const role = session.user.app_metadata?.role;
+        setIsAuthenticated(true);
+        setIsAdmin(role === 'admin');
+      } else {
+        setIsAuthenticated(false);
+        setIsAdmin(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const loadMatches = useCallback(async () => {
     setLoading(true);
     try {
-      const allMatches = await fetchMatches(true);
-      // Sort matches: Finished matches first (they are the ones that need highlights), then by date descending
+      const [dbMatches, dbTeams] = await Promise.all([
+        fetchMatchesFromDb(),
+        fetchTeamsFromDb()
+      ]);
+      const teamsById = new Map(dbTeams.map(t => [Number(t.id), t]));
+      const allMatches = dbMatches.map(m => mergeMatchData(m, teamsById));
+
       const sortedMatches = [...allMatches].sort((a, b) => {
-        // Finished first
         const aFinished = a.result?.status === 'finished';
         const bFinished = b.result?.status === 'finished';
         if (aFinished && !bFinished) return -1;
         if (!aFinished && bFinished) return 1;
-        // Then by time descending
         return new Date(b.match_time).getTime() - new Date(a.match_time).getTime();
       });
       setMatches(sortedMatches);
       
-      // Initialize inputs state
       const urls: Record<number, string> = {};
       sortedMatches.forEach(m => {
         urls[m.id] = m.highlight_url || '';
@@ -86,32 +123,57 @@ export default function AdminPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [showToast]);
 
-  const showToast = (type: 'success' | 'error', message: string) => {
-    setToast({ type, message });
-    setTimeout(() => setToast(null), 4000);
-  };
+  // Fetch matches once authenticated and admin
+  useEffect(() => {
+    if (isAuthenticated && isAdmin) {
+      const loadTimer = window.setTimeout(() => {
+        void loadMatches();
+      }, 0);
+      return () => window.clearTimeout(loadTimer);
+    }
+  }, [isAuthenticated, isAdmin, loadMatches]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pin === '0301') {
-      setIsAuthenticated(true);
-      sessionStorage.setItem('add_hl_auth', 'true');
-      setAuthError(false);
-    } else {
-      setAuthError(true);
-      setPin('');
-      if (typeof window !== 'undefined' && navigator.vibrate) {
-        navigator.vibrate(100);
+    setAuthError('');
+    setAuthLoading(true);
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        setAuthError(error.message === 'Invalid login credentials' 
+          ? 'Email hoặc mật khẩu không đúng!' 
+          : error.message);
+        return;
       }
+
+      if (data.user) {
+        const role = data.user.app_metadata?.role;
+        setIsAuthenticated(true);
+        setIsAdmin(role === 'admin');
+        if (role !== 'admin') {
+          setAuthError('Tài khoản không có quyền quản trị.');
+        }
+      }
+    } catch {
+      setAuthError('Lỗi kết nối tới hệ thống xác thực.');
+    } finally {
+      setAuthLoading(false);
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     setIsAuthenticated(false);
-    sessionStorage.removeItem('add_hl_auth');
-    setPin('');
+    setIsAdmin(false);
+    setEmail('');
+    setPassword('');
   };
 
   const handleUrlChange = (matchId: number, value: string) => {
@@ -121,86 +183,148 @@ export default function AdminPage() {
     }));
   };
 
+  // Save highlight via Worker (authenticated)
   const handleSave = async (matchId: number) => {
     setSavingId(matchId);
     const url = highlightUrls[matchId]?.trim() || null;
     
     try {
-      const { error } = await supabase
-        .from('wc2026_matches')
-        .update({ highlight_url: url })
-        .eq('id', matchId);
+      const token = await getAccessToken();
+      if (!token) {
+        showToast('error', 'Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
+        return;
+      }
 
-      if (error) throw error;
+      const response = await fetch(`${WORKER_URL}/admin/highlight`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({ match_id: matchId, highlight_url: url }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        if (response.status === 401) {
+          showToast('error', 'Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
+          await handleLogout();
+          return;
+        }
+        throw new Error(data.error || 'Lỗi không xác định');
+      }
       
-      // Update local match state
       setMatches(prev => prev.map(m => m.id === matchId ? { ...m, highlight_url: url } : m));
       showToast('success', 'Lưu liên kết highlight thành công!');
-    } catch (error) {
-      console.error('Lỗi khi cập nhật DB:', error);
-      showToast('error', 'Không thể lưu liên kết vào Database.');
+    } catch (error: unknown) {
+      console.error('Lỗi khi cập nhật:', error);
+      const message = error instanceof Error ? error.message : 'Không thể lưu liên kết.';
+      showToast('error', message);
     } finally {
       setSavingId(null);
     }
   };
 
+  // Delete highlight via Worker (authenticated)
   const handleClear = async (matchId: number) => {
     if (window.confirm('Bạn có chắc chắn muốn xóa liên kết highlight này?')) {
       setSavingId(matchId);
       try {
-        const { error } = await supabase
-          .from('wc2026_matches')
-          .update({ highlight_url: null })
-          .eq('id', matchId);
+        const token = await getAccessToken();
+        if (!token) {
+          showToast('error', 'Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
+          return;
+        }
 
-        if (error) throw error;
+        const response = await fetch(`${WORKER_URL}/admin/highlight`, {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ match_id: matchId }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          if (response.status === 401) {
+            showToast('error', 'Phiên đăng nhập hết hạn.');
+            await handleLogout();
+            return;
+          }
+          throw new Error(data.error || 'Lỗi không xác định');
+        }
         
         setHighlightUrls(prev => ({ ...prev, [matchId]: '' }));
         setMatches(prev => prev.map(m => m.id === matchId ? { ...m, highlight_url: null } : m));
         showToast('success', 'Đã xóa liên kết highlight!');
-      } catch (error) {
+      } catch (error: unknown) {
         console.error('Lỗi khi xóa:', error);
-        showToast('error', 'Không thể xóa liên kết.');
+        const message = error instanceof Error ? error.message : 'Không thể xóa liên kết.';
+        showToast('error', message);
       } finally {
         setSavingId(null);
       }
     }
   };
 
-  // Sync Events Today via Worker
+  // Admin API call helper (with auth)
+  const adminFetch = async (path: string): Promise<Response> => {
+    const token = await getAccessToken();
+    if (!token) throw new Error('Không có token xác thực');
+    return fetch(`${WORKER_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+  };
+
+  // Sync Events Today via Worker (authenticated)
   const handleSyncEventsToday = async () => {
     setSyncingEvents(true);
     try {
-      const workerUrl = process.env.NEXT_PUBLIC_WORKER_API_BASE_URL || 'https://lichworldcup-live.nhhai-tuhpy.workers.dev';
-      const response = await fetch(`${workerUrl}/sync-events-today`);
+      const response = await adminFetch('/sync-events-today');
       const data = await response.json();
       if (!response.ok) {
+        if (response.status === 401) {
+          showToast('error', 'Phiên đăng nhập hết hạn.');
+          await handleLogout();
+          return;
+        }
         throw new Error(data.error || 'Lỗi không xác định từ Worker');
       }
       showToast('success', `Đồng bộ sự kiện thành công! Đã quét và cập nhật các trận đấu hôm nay.`);
-      loadMatches(); // Reload match details to see score/events updates
-    } catch (error: any) {
+      loadMatches();
+    } catch (error: unknown) {
       console.error('Lỗi khi đồng bộ sự kiện:', error);
-      showToast('error', error.message || 'Không thể kết nối tới Worker để đồng bộ sự kiện.');
+      const message = error instanceof Error ? error.message : 'Không thể kết nối tới Worker.';
+      showToast('error', message);
     } finally {
       setSyncingEvents(false);
     }
   };
 
-  // Trigger GitHub Actions Workflow
+  // Trigger GitHub Actions Workflow (authenticated)
   const handleTriggerHighlightsWorkflow = async () => {
     setTriggeringWorkflow(true);
     try {
-      const workerUrl = process.env.NEXT_PUBLIC_WORKER_API_BASE_URL || 'https://lichworldcup-live.nhhai-tuhpy.workers.dev';
-      const response = await fetch(`${workerUrl}/trigger-highlights-workflow`);
+      const response = await adminFetch('/trigger-highlights-workflow');
       const data = await response.json();
       if (!response.ok) {
+        if (response.status === 401) {
+          showToast('error', 'Phiên đăng nhập hết hạn.');
+          await handleLogout();
+          return;
+        }
         throw new Error(data.error || 'Lỗi không xác định từ Worker');
       }
       showToast('success', 'Kích hoạt GitHub Actions cào link highlight thành công!');
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Lỗi khi kích hoạt workflow:', error);
-      showToast('error', error.message || 'Kích hoạt thất bại. Hãy chắc chắn đã cấu hình GITHUB_PAT cho Cloudflare Worker.');
+      const message = error instanceof Error ? error.message : 'Kích hoạt thất bại.';
+      showToast('error', message);
     } finally {
       setTriggeringWorkflow(false);
     }
@@ -229,8 +353,17 @@ export default function AdminPage() {
     return matchesSearch && matchesStatus && matchesHighlight;
   });
 
-  // Render Authentication Screen
-  if (!isAuthenticated) {
+  // Loading state
+  if (authLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center py-12 px-4">
+        <div className="h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Render Login Screen (Supabase Auth)
+  if (!isAuthenticated || !isAdmin) {
     return (
       <div className="flex-1 flex items-center justify-center py-12 px-4">
         <div className="w-full max-w-md rounded-2xl border border-card-border bg-card-bg/40 backdrop-blur-md p-8 shadow-2xl relative overflow-hidden transition-all duration-300">
@@ -239,51 +372,76 @@ export default function AdminPage() {
           <div className="absolute -bottom-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none" />
 
           <div className="flex flex-col items-center mb-6">
-            <div className="h-12 w-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white shadow-lg shadow-blue-500/20 mb-3 animate-pulse">
-              <Key size={24} weight="bold" />
+            <div className="h-12 w-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white shadow-lg shadow-blue-500/20 mb-3">
+              <SignIn size={24} weight="bold" />
             </div>
             <h1 className="text-xl font-extrabold tracking-wider text-center uppercase bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-red-400">
               Quản trị Hệ thống
             </h1>
             <p className="text-xs text-foreground/50 mt-1">
-              Nhập mã PIN để mở khóa các công cụ điều khiển
+              Đăng nhập với tài khoản quản trị viên
             </p>
           </div>
 
+          {isAuthenticated && !isAdmin && (
+            <div className="mb-4 p-3 rounded-xl border border-amber-500/20 bg-amber-500/5 text-amber-400 text-xs font-semibold flex items-center gap-2">
+              <Warning size={16} weight="fill" />
+              Tài khoản không có quyền quản trị. Liên hệ admin để được cấp quyền.
+            </div>
+          )}
+
           <form onSubmit={handleLogin} className="space-y-4">
-            <div>
+            <div className="relative">
+              <Envelope size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-foreground/40" />
               <input
-                type="password"
-                maxLength={4}
-                value={pin}
+                type="email"
+                value={email}
                 onChange={(e) => {
-                  const val = e.target.value.replace(/\D/g, '');
-                  setPin(val);
-                  if (authError) setAuthError(false);
+                  setEmail(e.target.value);
+                  if (authError) setAuthError('');
                 }}
-                placeholder="Nhập 4 chữ số mã PIN"
-                className={`w-full text-center text-lg font-bold py-3.5 px-4 rounded-xl border bg-black/20 focus:outline-none transition-all duration-300 ${
-                  pin ? 'tracking-[1em] pl-[1em]' : 'tracking-normal'
-                } ${
+                placeholder="Email"
+                className={`w-full py-3 pl-10 pr-4 rounded-xl border bg-black/20 focus:outline-none transition-all duration-300 text-sm ${
                   authError 
-                    ? 'border-red-500/50 focus:border-red-500 focus:ring-1 focus:ring-red-500/20 text-red-400 animate-shake' 
+                    ? 'border-red-500/50 focus:border-red-500 focus:ring-1 focus:ring-red-500/20 text-red-400' 
                     : 'border-white/10 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 text-foreground'
                 }`}
                 autoFocus
+                autoComplete="email"
               />
-              {authError && (
-                <p className="text-center text-[11px] font-semibold text-red-400 mt-2 flex items-center justify-center gap-1">
-                  <Warning size={14} /> Mã PIN không chính xác!
-                </p>
-              )}
             </div>
+
+            <div className="relative">
+              <LockKey size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-foreground/40" />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (authError) setAuthError('');
+                }}
+                placeholder="Mật khẩu"
+                className={`w-full py-3 pl-10 pr-4 rounded-xl border bg-black/20 focus:outline-none transition-all duration-300 text-sm ${
+                  authError 
+                    ? 'border-red-500/50 focus:border-red-500 focus:ring-1 focus:ring-red-500/20 text-red-400' 
+                    : 'border-white/10 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 text-foreground'
+                }`}
+                autoComplete="current-password"
+              />
+            </div>
+
+            {authError && (
+              <p className="text-center text-[11px] font-semibold text-red-400 flex items-center justify-center gap-1">
+                <Warning size={14} /> {authError}
+              </p>
+            )}
 
             <button
               type="submit"
-              disabled={pin.length < 4}
+              disabled={!email || !password || authLoading}
               className="w-full py-3 rounded-xl bg-gradient-to-r from-blue-500 via-purple-500 to-red-500 hover:from-blue-600 hover:to-red-600 text-white font-bold text-sm shadow-lg shadow-purple-500/25 transition-all duration-300 transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none cursor-pointer"
             >
-              Mở khóa giao diện
+              {authLoading ? 'Đang xác thực...' : 'Đăng nhập'}
             </button>
           </form>
         </div>
@@ -335,8 +493,8 @@ export default function AdminPage() {
             onClick={handleLogout}
             className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-red-400 text-xs font-semibold transition-colors cursor-pointer ml-auto sm:ml-0"
           >
-            <Lock size={15} />
-            Đóng phiên
+            <SignOut size={15} />
+            Đăng xuất
           </button>
         </div>
       </div>
@@ -494,7 +652,7 @@ export default function AdminPage() {
                   <div className="flex items-center gap-3 text-xs font-extrabold text-foreground">
                     <div className="flex items-center gap-2 truncate max-w-[150px]">
                       {match.home_team?.flag_url && (
-                        <img src={match.home_team.flag_url} alt="" className="h-3 w-5 object-cover rounded-sm border border-white/5" />
+                        <Image src={match.home_team.flag_url} alt="" width={20} height={12} className="h-3 w-5 object-cover rounded-sm border border-white/5" />
                       )}
                       <span className="truncate">{match.home_team_name}</span>
                     </div>
@@ -505,7 +663,7 @@ export default function AdminPage() {
 
                     <div className="flex items-center gap-2 truncate max-w-[150px]">
                       {match.away_team?.flag_url && (
-                        <img src={match.away_team.flag_url} alt="" className="h-3 w-5 object-cover rounded-sm border border-white/5" />
+                        <Image src={match.away_team.flag_url} alt="" width={20} height={12} className="h-3 w-5 object-cover rounded-sm border border-white/5" />
                       )}
                       <span className="truncate">{match.away_team_name}</span>
                     </div>

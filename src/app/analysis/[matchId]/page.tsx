@@ -1,5 +1,8 @@
 import React from 'react';
-import { fetchMatches, fetchMatchPrediction } from '../../../lib/dataManager';
+import { fetchMatchesFromDb } from '../../../data/supabase/matches.repository';
+import { fetchTeamsFromDb } from '../../../data/supabase/teams.repository';
+import { fetchPredictionFromDb } from '../../../data/supabase/predictions.repository';
+import { mergeMatchData } from '../../../data/domain/merge-match-data';
 import AnalysisClient from './AnalysisClient';
 
 interface PageProps {
@@ -7,15 +10,13 @@ interface PageProps {
 }
 
 export async function generateStaticParams() {
-  try {
-    const matches = await fetchMatches();
-    return matches.map((m) => ({
-      matchId: String(m.id),
-    }));
-  } catch (error) {
-    console.error('Failed to run generateStaticParams:', error);
-    return [];
+  const matches = await fetchMatchesFromDb();
+  if (matches.length === 0) {
+    throw new Error('No matches found in database, static generation aborted to prevent partial build!');
   }
+  return matches.map((m) => ({
+    matchId: String(m.id),
+  }));
 }
 
 export default async function MatchAnalysisPage({ params }: PageProps) {
@@ -25,9 +26,18 @@ export default async function MatchAnalysisPage({ params }: PageProps) {
   let prediction = null;
 
   try {
-    const allMatches = await fetchMatches();
-    match = allMatches.find(m => m.id === Number(matchId)) || null;
-    prediction = await fetchMatchPrediction(Number(matchId));
+    const [dbMatches, dbTeams, dbPrediction] = await Promise.all([
+      fetchMatchesFromDb(),
+      fetchTeamsFromDb(),
+      fetchPredictionFromDb(Number(matchId)),
+    ]);
+    
+    const teamsById = new Map(dbTeams.map(t => [Number(t.id), t]));
+    const matchRow = dbMatches.find(m => m.id === Number(matchId)) || null;
+    if (matchRow) {
+      match = mergeMatchData(matchRow, teamsById);
+    }
+    prediction = dbPrediction;
   } catch (error) {
     console.error(`Failed to fetch match analysis data for ID ${matchId}:`, error);
   }

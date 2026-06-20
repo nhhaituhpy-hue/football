@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { Match, MatchEvent } from '../types';
-import { fetchMatchEvents } from '../lib/dataManager';
+import { fetchEventsFromDb } from '../data/supabase/events.repository';
 import { SoccerBall, Television, Calendar, MapPin } from '@phosphor-icons/react';
 
 interface MatchCardProps {
@@ -41,7 +41,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
         return;
       }
 
-      const nextEvents = isScheduled ? [] : await fetchMatchEvents(match.id);
+      const nextEvents = isScheduled ? [] : await fetchEventsFromDb(match.id);
       if (active) setEvents(nextEvents);
     };
 
