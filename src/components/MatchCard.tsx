@@ -17,8 +17,11 @@ interface MatchCardProps {
 export default function MatchCard({ match, isLiveWidget = false, homeTeamStanding, awayTeamStanding }: MatchCardProps) {
   const [events, setEvents] = useState<MatchEvent[]>([]);
   const [showEvents, setShowEvents] = useState(true);
-  const [elapsedTime, setElapsedTime] = useState<string>('');
   const { result, home_team, away_team } = match;
+  const homeYellowCards = result?.yellow_cards?.home || 0;
+  const homeRedCards = result?.red_cards?.home || 0;
+  const awayYellowCards = result?.yellow_cards?.away || 0;
+  const awayRedCards = result?.red_cards?.away || 0;
   const homeCode = home_team?.code || match.home_team_code || 'TBD';
   const awayCode = away_team?.code || match.away_team_code || 'TBD';
   const homeName = home_team?.name_vi || match.home_team_name || 'Chưa xác định';
@@ -48,53 +51,17 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
     };
   }, [match.id, result?.status, result?.home_score, result?.away_score, isScheduled, match.events]);
 
-  // Realtime clock running second-by-second on client side
-  useEffect(() => {
-    if (!isLive || !result) {
-      setElapsedTime('');
-      return;
+  // Lấy text hiển thị thời gian trận đấu trực tiếp từ dữ liệu Bongdalu
+  const getLiveMatchTimeText = () => {
+    if (!result) return '';
+    if (result.phase === 'HT') return 'HT';
+    if (result.phase === '1H+') return "45+'";
+    if (result.phase === '2H+') return "90+'";
+    if (result.phase === 'PEN' || result.home_pen_score > 0 || result.away_pen_score > 0) {
+      return `PEN (${result.home_pen_score}-${result.away_pen_score})`;
     }
-
-    const updateClock = () => {
-      // 1. HT (Halftime)
-      if (result.phase === 'HT') {
-        setElapsedTime('HT');
-        return;
-      }
-
-      // 2. Penalty shootout (PEN)
-      if (result.phase === 'PEN' || result.home_pen_score > 0 || result.away_pen_score > 0) {
-        setElapsedTime(`PEN (${result.home_pen_score}-${result.away_pen_score})`);
-        return;
-      }
-
-      // 3. Regular time / Extra time
-      const lastMinute = result.current_minute || 1;
-      const lastUpdate = new Date(result.updated_at).getTime();
-      
-      const diffMs = Date.now() - lastUpdate;
-      const totalSeconds = Math.max(0, (lastMinute - 1) * 60 + Math.floor(diffMs / 1000));
-      
-      const minutes = Math.floor(totalSeconds / 60);
-      const seconds = totalSeconds % 60;
-      
-      // Limit to 120' for Extra Time, 90' for Regular Time
-      const maxMinutes = result.phase === 'ET' ? 120 : 90;
-      
-      if (minutes >= maxMinutes) {
-        setElapsedTime(`${maxMinutes}:00+`);
-      } else {
-        const formattedMin = String(minutes).padStart(2, '0');
-        const formattedSec = String(seconds).padStart(2, '0');
-        setElapsedTime(`${formattedMin}:${formattedSec}`);
-      }
-    };
-
-    updateClock();
-    const interval = setInterval(updateClock, 1000);
-    
-    return () => clearInterval(interval);
-  }, [isLive, result?.current_minute, result?.updated_at, result?.phase, result?.home_pen_score, result?.away_pen_score]);
+    return `${result.current_minute || 1}'`;
+  };
 
   // Format giờ thi đấu sang giờ Việt Nam (GMT+7)
   const formatMatchTime = (timeStr: string) => {
@@ -165,20 +132,42 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
       <div className="flex items-center justify-between gap-2 py-2">
         {/* Đội nhà */}
         <div className="flex-1 flex flex-col items-center text-center">
-          <div className="relative h-12 w-12 sm:h-14 sm:w-14 rounded-lg overflow-hidden border border-white/10 shadow-sm mb-2 bg-white/5">
-            {home_team?.flag_url ? (
-              <Image
-                src={home_team.flag_url} 
-                alt={home_team.name_vi}
-                width={56}
-                height={56}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-500/20 to-purple-500/20 text-blue-400 font-bold text-xs sm:text-sm uppercase select-none">
-                {homeCode.slice(0, 4)}
-              </div>
-            )}
+          <div className="relative mb-2">
+            <div className="relative h-12 w-12 sm:h-14 sm:w-14 rounded-lg overflow-hidden border border-white/10 shadow-sm bg-white/5">
+              {home_team?.flag_url ? (
+                <Image
+                  src={home_team.flag_url} 
+                  alt={home_team.name_vi}
+                  width={56}
+                  height={56}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-500/20 to-purple-500/20 text-blue-400 font-bold text-xs sm:text-sm uppercase select-none">
+                  {homeCode.slice(0, 4)}
+                </div>
+              )}
+            </div>
+
+            {/* Thẻ phạt đội nhà */}
+            <div className="absolute -top-1 -right-1 z-20 flex gap-0.5 pointer-events-none">
+              {homeYellowCards > 0 && (
+                <div 
+                  className="w-3 h-4 bg-yellow-400 border border-yellow-500 rounded-[1px] flex items-center justify-center text-[8px] font-black text-black shadow shadow-black/40"
+                  title={`${homeYellowCards} thẻ vàng`}
+                >
+                  {homeYellowCards > 1 ? homeYellowCards : ''}
+                </div>
+              )}
+              {homeRedCards > 0 && (
+                <div 
+                  className="w-3 h-4 bg-red-600 border border-red-700 rounded-[1px] flex items-center justify-center text-[8px] font-black text-white shadow shadow-black/40"
+                  title={`${homeRedCards} thẻ đỏ`}
+                >
+                  {homeRedCards > 1 ? homeRedCards : ''}
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex items-center justify-center gap-1 max-w-full">
             <span className="text-xs sm:text-sm font-semibold truncate max-w-[70px] sm:max-w-[100px]" title={homeName}>
@@ -243,7 +232,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
                     : 'bg-red-500/10 text-red-400 live-indicator-pulse border-red-500/20'
                 }`}>
                   <SoccerBall size={10} className={result.phase === 'HT' ? '' : 'animate-spin-slow'} />
-                  <span>{elapsedTime ? (elapsedTime.includes('PEN') || elapsedTime === 'HT' ? elapsedTime : `PHÚT ${elapsedTime}`) : (result.phase === 'HT' ? 'HT' : `PHÚT ${result.current_minute}'`)}</span>
+                  <span>{getLiveMatchTimeText()}</span>
                 </div>
               )}
 
@@ -263,20 +252,42 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
 
         {/* Đội khách */}
         <div className="flex-1 flex flex-col items-center text-center">
-          <div className="relative h-12 w-12 sm:h-14 sm:w-14 rounded-lg overflow-hidden border border-white/10 shadow-sm mb-2 bg-white/5">
-            {away_team?.flag_url ? (
-              <Image
-                src={away_team.flag_url} 
-                alt={away_team.name_vi}
-                width={56}
-                height={56}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-500/20 to-purple-500/20 text-red-400 font-bold text-xs sm:text-sm uppercase select-none">
-                {awayCode.slice(0, 4)}
-              </div>
-            )}
+          <div className="relative mb-2">
+            <div className="relative h-12 w-12 sm:h-14 sm:w-14 rounded-lg overflow-hidden border border-white/10 shadow-sm bg-white/5">
+              {away_team?.flag_url ? (
+                <Image
+                  src={away_team.flag_url} 
+                  alt={away_team.name_vi}
+                  width={56}
+                  height={56}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-500/20 to-purple-500/20 text-red-400 font-bold text-xs sm:text-sm uppercase select-none">
+                  {awayCode.slice(0, 4)}
+                </div>
+              )}
+            </div>
+
+            {/* Thẻ phạt đội khách */}
+            <div className="absolute -top-1 -right-1 z-20 flex gap-0.5 pointer-events-none">
+              {awayYellowCards > 0 && (
+                <div 
+                  className="w-3 h-4 bg-yellow-400 border border-yellow-500 rounded-[1px] flex items-center justify-center text-[8px] font-black text-black shadow shadow-black/40"
+                  title={`${awayYellowCards} thẻ vàng`}
+                >
+                  {awayYellowCards > 1 ? awayYellowCards : ''}
+                </div>
+              )}
+              {awayRedCards > 0 && (
+                <div 
+                  className="w-3 h-4 bg-red-600 border border-red-700 rounded-[1px] flex items-center justify-center text-[8px] font-black text-white shadow shadow-black/40"
+                  title={`${awayRedCards} thẻ đỏ`}
+                >
+                  {awayRedCards > 1 ? awayRedCards : ''}
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex items-center justify-center gap-1 max-w-full">
             <span className="text-xs sm:text-sm font-semibold truncate max-w-[70px] sm:max-w-[100px]" title={awayName}>

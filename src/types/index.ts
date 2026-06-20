@@ -33,6 +33,8 @@ export interface MatchResult {
   away_pen_score: number;
   updated_at: string;
   phase?: string | null;
+  red_cards?: { home: number; away: number } | null;
+  yellow_cards?: { home: number; away: number } | null;
 }
 
 export interface Match {
@@ -81,6 +83,8 @@ export interface WorkerLiveMatch {
   away_score?: number | null;
   home_pen?: number | null;
   away_pen?: number | null;
+  red_cards?: { home: number; away: number } | null;
+  yellow_cards?: { home: number; away: number } | null;
   events?: MatchEvent[];
   updated_at?: string;
 }

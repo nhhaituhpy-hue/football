@@ -54,29 +54,15 @@ function matchHighlight(homeName, awayName, titleText) {
 
 // 3. Hàm chính chạy Scraping và Sync
 async function main() {
-  // Lấy ngày hôm nay theo múi giờ Việt Nam (UTC+7)
-  const now = new Date();
-  const localTime = new Date(now.getTime() + (7 * 60 * 60 * 1000));
-  const year = localTime.getUTCFullYear();
-  const month = String(localTime.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(localTime.getUTCDate()).padStart(2, '0');
-  const todayLocalDateStr = `${year}-${month}-${day}`;
-
-  const startOfToday = `${todayLocalDateStr}T00:00:00+07:00`;
-  const endOfToday = `${todayLocalDateStr}T23:59:59+07:00`;
-
   console.log(`--- [RUN] ${new Date().toISOString()} ---`);
-  console.log(`Tìm trận đấu hôm nay (UTC+7): ${todayLocalDateStr}`);
-  console.log(`Khoảng thời gian UTC+7: ${startOfToday} -> ${endOfToday}`);
+  console.log(`Tìm kiếm tất cả các trận đấu đã kết thúc (FT/FT_PEN) chưa có highlight_url...`);
 
-  // Bước A: Truy vấn các trận đấu trong hôm nay có phase = 'FT' và highlight_url null
+  // Bước A: Truy vấn các trận đấu đã kết thúc có phase là FT hoặc FT_PEN và highlight_url null
   const { data: matches, error: fetchError } = await supabase
     .from('wc2026_matches')
     .select('id, home_team_name, away_team_name, kickoff_utc, phase, highlight_url')
-    .eq('phase', 'FT')
-    .is('highlight_url', null)
-    .gte('kickoff_utc', startOfToday)
-    .lte('kickoff_utc', endOfToday);
+    .in('phase', ['FT', 'FT_PEN'])
+    .is('highlight_url', null);
 
   if (fetchError) {
     console.error('Lỗi khi truy vấn database:', fetchError);
@@ -84,7 +70,7 @@ async function main() {
   }
 
   if (!matches || matches.length === 0) {
-    console.log('Xác nhận: Không có trận đấu nào hôm nay đã kết thúc (FT) bị thiếu highlight_url. Dừng script.');
+    console.log('Xác nhận: Không có trận đấu nào đã kết thúc bị thiếu highlight_url. Dừng script.');
     process.exit(0);
   }
 

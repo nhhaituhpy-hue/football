@@ -80,6 +80,8 @@ function resultFromMatch(row: SupabaseMatchRow, live?: WorkerLiveMatch): MatchRe
     away_pen_score: live?.away_pen ?? row.away_pen ?? 0,
     updated_at: live?.updated_at || row.updated_at || new Date().toISOString(),
     phase,
+    red_cards: live?.red_cards || null,
+    yellow_cards: live?.yellow_cards || null,
   };
 }
 
@@ -126,11 +128,31 @@ async function fetchWorkerJson<T>(path: string): Promise<T | null> {
   }
 }
 
+let globalSocket: WebSocket | null = null;
+let listeners = new Set<() => void>();
+let cachedLiveMatches: WorkerLiveMatch[] = [];
+
 export async function fetchLiveMatches(force = false): Promise<WorkerLiveMatch[]> {
   if (typeof window === 'undefined' || process.env.NEXT_PHASE === 'phase-production-build') {
     return [];
   }
-  return (await fetchWorkerJson<WorkerLiveMatch[]>(force ? '/live?force=true' : '/live')) || [];
+  if (force) {
+    const data = await fetchWorkerJson<WorkerLiveMatch[]>('/live?force=true');
+    if (data) {
+      cachedLiveMatches = data;
+    }
+    return cachedLiveMatches;
+  }
+  
+  if (globalSocket && globalSocket.readyState === WebSocket.OPEN && cachedLiveMatches.length > 0) {
+    return cachedLiveMatches;
+  }
+
+  const data = await fetchWorkerJson<WorkerLiveMatch[]>('/live');
+  if (data) {
+    cachedLiveMatches = data;
+  }
+  return cachedLiveMatches;
 }
 
 export async function fetchTeams(): Promise<Team[]> {
@@ -224,8 +246,66 @@ export async function fetchMatchPrediction(matchId: number): Promise<MatchPredic
 }
 
 export function subscribeMatches(callback: () => void) {
-  const interval = window.setInterval(callback, 15000);
-  return () => window.clearInterval(interval);
+  listeners.add(callback);
+
+  if (!globalSocket && typeof window !== 'undefined' && WORKER_API_BASE_URL) {
+    let reconnectAttempts = 0;
+    let reconnectTimeout: number | undefined;
+
+    const connect = () => {
+      // Handle protocol upgrade from https to wss, or http to ws
+      const wsUrl = WORKER_API_BASE_URL.replace(/^http/, 'ws') + '/live';
+      console.log('Connecting to WebSocket live cache:', wsUrl);
+      
+      const socket = new WebSocket(wsUrl);
+      globalSocket = socket;
+
+      socket.onmessage = (event) => {
+        try {
+          const envelope = JSON.parse(event.data) as WorkerEnvelope<WorkerLiveMatch[]> | WorkerLiveMatch[];
+          const liveData = envelope && typeof envelope === 'object' && 'data' in envelope 
+            ? (envelope as WorkerEnvelope<WorkerLiveMatch[]>).data 
+            : (envelope as WorkerLiveMatch[]);
+          
+          cachedLiveMatches = liveData;
+          listeners.forEach(cb => cb());
+        } catch (err) {
+          console.warn('Failed to parse WebSocket message:', err);
+        }
+      };
+
+      socket.onopen = () => {
+        console.log('WebSocket connection established.');
+        reconnectAttempts = 0;
+      };
+
+      socket.onclose = (event) => {
+        console.log(`WebSocket closed (code: ${event.code}). Reconnecting...`);
+        globalSocket = null;
+        
+        // Exponential backoff reconnect
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+        reconnectAttempts++;
+        reconnectTimeout = window.setTimeout(connect, delay);
+      };
+
+      socket.onerror = (err) => {
+        console.error('WebSocket error:', err);
+        socket.close();
+      };
+    };
+
+    connect();
+  }
+
+  return () => {
+    listeners.delete(callback);
+    if (listeners.size === 0 && globalSocket) {
+      console.log('Closing idle WebSocket connection...');
+      globalSocket.close();
+      globalSocket = null;
+    }
+  };
 }
 
 export async function fetchTournamentRules() {

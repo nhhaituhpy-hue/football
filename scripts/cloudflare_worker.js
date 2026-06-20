@@ -34,6 +34,159 @@ const USER_AGENTS = [
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 ];
 
+export class LiveCacheObject {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    this.latestLiveMatches = null;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    
+    if (url.pathname === '/live') {
+      // Check if client is requesting a WebSocket upgrade
+      if (request.headers.get("Upgrade") === "websocket") {
+        console.log("WebSocket connection request received.");
+        const webSocketPair = new WebSocketPair();
+        const [client, server] = Object.values(webSocketPair);
+
+        // Accept the server WebSocket under DO Hibernation
+        this.state.acceptWebSocket(server);
+
+        // Send the current cached data to the socket immediately if available
+        try {
+          const cached = this.latestLiveMatches || await this.state.storage.get("live");
+          if (cached) {
+            server.send(JSON.stringify(cached));
+          } else {
+            server.send(JSON.stringify({ data: [], updated_at: new Date().toISOString() }));
+          }
+        } catch (err) {
+          console.warn("Failed to send initial cached matches to socket:", err.message);
+        }
+
+        // Asynchronously check if the alarm needs to be started
+        const currentAlarm = await this.state.storage.getAlarm();
+        if (currentAlarm === null) {
+          const dbMatches = await getSupabaseRows(this.env, '/rest/v1/wc2026_matches?select=*').catch(() => []);
+          const now = new Date();
+          const hasActiveOrUpcoming = dbMatches.some(m => {
+            if (m.status === 'live' || m.status === 'in_progress') return true;
+            if (m.status === 'finished' || m.status === 'cancelled' || m.status === 'postponed') return false;
+
+            const kickoff = new Date(m.kickoff_utc);
+            const diffMs = now.getTime() - kickoff.getTime();
+            return diffMs >= -15 * 60 * 1000;
+          });
+
+          if (hasActiveOrUpcoming) {
+            console.log('Active or upcoming matches found on WS connection. Starting DO alarm...');
+            await this.state.storage.setAlarm(Date.now() + 100);
+          }
+        }
+
+        // Return status 101 Switching Protocols
+        return new Response(null, {
+          status: 101,
+          webSocket: client,
+        });
+      }
+
+      // Standard HTTP fetch (Fallback/Force)
+      const force = url.searchParams.get('force') === 'true';
+
+      // Nếu DO vừa thức dậy từ hibernate (in-memory cache trống),
+      // scrape tươi 1 lần để lấy phút mới nhất trước khi trả kết quả
+      if (force || !this.latestLiveMatches) {
+        console.log(force ? "Force refresh requested." : "DO woke from hibernation, scraping fresh data...");
+        try {
+          await refreshLiveCacheAndSync(this.env, this);
+        } catch (err) {
+          console.warn("Scrape on fetch failed:", err.message);
+        }
+      }
+      
+      const payload = this.latestLiveMatches || await this.state.storage.get("live") || {
+        data: [],
+        cached: false,
+        updated_at: new Date().toISOString(),
+      };
+      
+      return new Response(JSON.stringify(payload), {
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+        }
+      });
+    }
+
+    if (url.pathname === '/start-alarm') {
+      const currentAlarm = await this.state.storage.getAlarm();
+      if (currentAlarm === null) {
+        // Fetch matches from Supabase to check if any are live or starting soon
+        const dbMatches = await getSupabaseRows(this.env, '/rest/v1/wc2026_matches?select=*').catch(() => []);
+        const now = new Date();
+        const hasActiveOrUpcoming = dbMatches.some(m => {
+          if (m.status === 'live' || m.status === 'in_progress') return true;
+          if (m.status === 'finished' || m.status === 'cancelled' || m.status === 'postponed') return false;
+
+          const kickoff = new Date(m.kickoff_utc);
+          const diffMs = now.getTime() - kickoff.getTime();
+          
+          // Kickoff in past, or starting in the next 15 mins
+          return diffMs >= -15 * 60 * 1000;
+        });
+
+        if (hasActiveOrUpcoming) {
+          console.log('Active or upcoming matches found. Starting DO alarm...');
+          await this.state.storage.setAlarm(Date.now() + 100); // Trigger in 100ms
+          return new Response(JSON.stringify({ status: "started" }), { headers: JSON_HEADERS });
+        } else {
+          console.log('No active/upcoming matches. Alarm NOT started.');
+          return new Response(JSON.stringify({ status: "skipped", reason: "no_active_matches" }), { headers: JSON_HEADERS });
+        }
+      }
+      return new Response(JSON.stringify({ status: "already_running" }), { headers: JSON_HEADERS });
+    }
+
+    return new Response("Not Found", { status: 404 });
+  }
+
+  async alarm() {
+    console.log("Durable Object alarm triggered. Running scrape step...");
+    try {
+      const result = await refreshLiveCacheAndSync(this.env, this);
+      if (result.hasActiveOrUpcoming) {
+        console.log("Active or upcoming matches remain. Scheduling next alarm in 15s...");
+        await this.state.storage.setAlarm(Date.now() + 15000);
+      } else {
+        console.log("No active or upcoming matches. Alarm loop stopping.");
+      }
+    } catch (err) {
+      console.error("Durable Object alarm execution failed:", err.message);
+      // Try again in 30s in case of transient errors
+      await this.state.storage.setAlarm(Date.now() + 30000);
+    }
+  }
+
+  // WebSocket Hibernation Events
+  webSocketMessage(ws, message) {
+    // We do not expect client messages; ignore
+    console.log("WebSocket message received from client (ignored):", message);
+  }
+
+  webSocketClose(ws, code, reason, wasClean) {
+    console.log(`WebSocket closed. Code: ${code}, Reason: ${reason}, WasClean: ${wasClean}`);
+    ws.close();
+  }
+
+  webSocketError(ws, error) {
+    console.error("WebSocket error:", error);
+    ws.close();
+  }
+}
+
 const worker = {
   async scheduled(event, env, ctx) {
     if (event.cron === "0 1 * * *") {
@@ -41,7 +194,9 @@ const worker = {
     } else if (event.cron === "0 */6 * * *") {
       ctx.waitUntil(syncWc2026Schedule(env));
     } else {
-      ctx.waitUntil(refreshLiveCache(env, ctx, true));
+      const id = env.LIVE_CACHE_DO.idFromName("global_live_cache");
+      const obj = env.LIVE_CACHE_DO.get(id);
+      ctx.waitUntil(obj.fetch("http://do/start-alarm"));
     }
   },
 
@@ -52,10 +207,10 @@ const worker = {
     const isCacheablePath = ['/live', '/matches', '/standings'].includes(url.pathname);
     const force = url.searchParams.get('force') === 'true';
 
-    // Try to fetch from Cloudflare Cache API
+    // Try to fetch from Cloudflare Cache API (exclude /live from CDN cache as DO is fast and we want live updates)
     const cache = caches.default;
     const cacheKey = new Request(url.toString(), request);
-    if (isCacheablePath && request.method === 'GET' && !force) {
+    if (isCacheablePath && url.pathname !== '/live' && request.method === 'GET' && !force) {
       try {
         const cachedResponse = await cache.match(cacheKey);
         if (cachedResponse) {
@@ -93,7 +248,7 @@ const worker = {
         }
         const match = dbMatches[0];
 
-        await scrapeAndSyncMatchEvents(env, ctx, match.id, match.home_team_name, match.away_team_name);
+        await scrapeAndSyncMatchEvents(env, null, match.id, match.home_team_name, match.away_team_name);
         
         const events = await getSupabaseRows(env, `/rest/v1/wc2026_match_events?match_id=eq.${matchId}&provider=eq.thethao247`);
 
@@ -105,20 +260,31 @@ const worker = {
         });
       }
 
-      let payload;
-      let cacheTtl = 10; // Default cache TTL in seconds
-
       if (url.pathname === '/live') {
-        payload = await getLive(env, ctx, force);
-        cacheTtl = 10;
-      } else if (url.pathname === '/matches') {
+        const id = env.LIVE_CACHE_DO.idFromName("global_live_cache");
+        const obj = env.LIVE_CACHE_DO.get(id);
+        
+        if (force) {
+          // Trigger immediate scrape and fetch from DO
+          return obj.fetch(request);
+        } else {
+          // Asynchronously ensure the DO alarm is running if active matches exist
+          ctx.waitUntil(obj.fetch("http://do/start-alarm"));
+          return obj.fetch(request);
+        }
+      }
+
+      let payload;
+      let cacheTtl = 300; // Default cache TTL in seconds
+
+      if (url.pathname === '/matches') {
         const data = await getSupabaseRows(env, '/rest/v1/wc2026_matches?select=*&order=kickoff_utc.asc');
         payload = {
           data,
           cached: false,
           updated_at: new Date().toISOString(),
         };
-        cacheTtl = 300; // Matches can be cached for 5 mins in CDN
+        cacheTtl = 300;
       } else if (url.pathname === '/standings') {
         const data = await getStandings(env);
         payload = {
@@ -126,7 +292,7 @@ const worker = {
           cached: false,
           updated_at: new Date().toISOString(),
         };
-        cacheTtl = 300; // Standings can be cached for 5 mins in CDN
+        cacheTtl = 300;
       } else {
         return json({ error: 'Not found' }, 404);
       }
@@ -145,13 +311,6 @@ const worker = {
       if (isCacheablePath && request.method === 'GET') {
         try {
           ctx.waitUntil(cache.put(cacheKey, response.clone()));
-          if (force && url.pathname === '/live') {
-            // Also update the cache for the regular URL (without ?force=true)
-            const regularUrl = new URL(url.toString());
-            regularUrl.searchParams.delete('force');
-            const regularCacheKey = new Request(regularUrl.toString(), request);
-            ctx.waitUntil(cache.put(regularCacheKey, response.clone()));
-          }
         } catch (cachePutError) {
           console.warn('Cache put failed:', cachePutError.message);
         }
@@ -170,19 +329,8 @@ function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: JSON_HEADERS });
 }
 
-async function getLive(env, ctx, force = false) {
-  if (!force) {
-    const cached = await env.WC2026_CACHE?.get('live', 'json');
-    if (cached) return { ...cached, cached: true };
-  }
-
-  const fresh = await refreshLiveCache(env, ctx, false);
-  ctx?.waitUntil?.(Promise.resolve());
-  return { ...fresh, cached: false };
-}
-
-
-async function refreshLiveCache(env, ctx, isCron = false) {
+async function refreshLiveCacheAndSync(env, doInstance) {
+  const doState = doInstance.state;
   try {
     const [dbMatches, dbTeams] = await Promise.all([
       getSupabaseRows(env, '/rest/v1/wc2026_matches?select=*'),
@@ -193,7 +341,7 @@ async function refreshLiveCache(env, ctx, isCron = false) {
     });
 
     const now = new Date();
-    const hasActiveOrUpcomingMatches = dbMatches.some(m => {
+    const hasActiveOrUpcoming = dbMatches.some(m => {
       if (m.status === 'live' || m.status === 'in_progress') return true;
       if (m.status === 'finished' || m.status === 'cancelled' || m.status === 'postponed') return false;
 
@@ -204,27 +352,24 @@ async function refreshLiveCache(env, ctx, isCron = false) {
       return diffMs >= -15 * 60 * 1000;
     });
 
-    if (!hasActiveOrUpcomingMatches) {
-      console.log('No active or upcoming matches in the schedule window. Skipping live scraper fetch.');
+    if (!hasActiveOrUpcoming) {
+      console.log('No active or upcoming matches in the schedule window. Resetting live matches cache.');
       const envelope = {
         data: [],
         cached: false,
         updated_at: now.toISOString(),
       };
       
-      const cachedKV = await env.WC2026_CACHE?.get('live', 'json').catch(() => null);
-      const oldData = cachedKV ? cachedKV.data : null;
+      doInstance.latestLiveMatches = envelope;
+      
+      const cachedDO = await doState.storage.get('live');
+      const oldData = cachedDO ? cachedDO.data : null;
 
       if (!oldData || oldData.length > 0) {
-        console.log('Updating KV cache with empty live matches list...');
-        await env.WC2026_CACHE?.put('live', JSON.stringify(envelope));
-      } else {
-        console.log('Live matches list is already empty in KV. Skipping KV write.');
-        if (cachedKV) {
-          envelope.updated_at = cachedKV.updated_at;
-        }
+        console.log('Updating DO storage with empty live matches list...');
+        await doState.storage.put('live', envelope);
       }
-      return envelope;
+      return { hasActiveOrUpcoming: false, envelope };
     }
 
     const teamsById = new Map(dbTeams.map(t => [t.id, t]));
@@ -243,122 +388,237 @@ async function refreshLiveCache(env, ctx, isCron = false) {
       return wc2026Matches;
     };
 
-    // Function to run a single scrape step
-    const runScrapeStep = async () => {
-      console.log(`Executing live scrape step at ${new Date().toISOString()}...`);
-      const rawEvents = await fetchBongdaluLive(env).catch(err => {
-        console.warn('Failed to fetch Bongdalu live matches:', err.message);
-        return [];
-      });
+    console.log(`Executing live scrape step at ${new Date().toISOString()}...`);
+    const rawEvents = await fetchBongdaluLive(env).catch(err => {
+      console.warn('Failed to fetch Bongdalu live matches:', err.message);
+      return [];
+    });
 
-      const dataPromises = rawEvents.map(async (event) => {
-        const match = findMatchingMatch(dbMatches, teamsById, event);
-        if (!match) return null;
+    // Tải thời điểm chuyển giai đoạn (bắt đầu hiệp 2, hiệp phụ) từ DO storage
+    const periodTransitions = await doState.storage.get('periodTransitions') || {};
+    let transitionsUpdated = false;
 
-        if (match.status === 'finished') {
-          return null;
+    const dataPromises = rawEvents.map(async (event) => {
+      const match = findMatchingMatch(dbMatches, teamsById, event);
+      if (!match) return null;
+
+      if (match.status === 'finished') {
+        return null;
+      }
+
+      let homeScore = event.homeScore;
+      let awayScore = event.awayScore;
+      let homePen = null;
+      let awayPen = null;
+      let phase = event.phase;
+      let status = event.status;
+
+      const wasNotFinishedInDb = match.status !== 'finished';
+      const isNowFinished = status === 'finished';
+
+      if (isNowFinished) {
+        // Retrieve official score from WC2026 API
+        const wcMatchesList = await getWc2026MatchesCached();
+        const apiMatch = wcMatchesList.find(m => Number(m.id) === Number(match.id));
+        if (apiMatch) {
+          homeScore = apiMatch.home_score ?? homeScore;
+          awayScore = apiMatch.away_score ?? awayScore;
+          homePen = apiMatch.home_pen ?? null;
+          awayPen = apiMatch.away_pen ?? null;
+          phase = (apiMatch.phase === 'FT' || apiMatch.phase === 'FT_PEN') ? apiMatch.phase : 'FT';
+          status = 'finished';
+          console.log(`Using official WC2026 API score for match ${match.id} (FT): ${homeScore} - ${awayScore}`);
+        } else {
+          console.warn(`Match ${match.id} is finished but not found in WC2026 API`);
         }
 
-        let homeScore = event.homeScore;
-        let awayScore = event.awayScore;
-        let homePen = null;
-        let awayPen = null;
-        let phase = event.phase;
-        let status = event.status;
+        // Update match status in the local DB matches array
+        match.status = 'finished';
 
-        const wasNotFinishedInDb = match.status !== 'finished';
-        const isNowFinished = status === 'finished';
+        // Sync detail events from thethao247
+        if (wasNotFinishedInDb) {
+          await scrapeAndSyncMatchEvents(env, null, match.id, match.home_team_name, match.away_team_name);
+        }
+      }
 
-        if (isNowFinished) {
-          // Retrieve official score from WC2026 API
-          const wcMatchesList = await getWc2026MatchesCached();
-          const apiMatch = wcMatchesList.find(m => Number(m.id) === Number(match.id));
-          if (apiMatch) {
-            homeScore = apiMatch.home_score ?? homeScore;
-            awayScore = apiMatch.away_score ?? awayScore;
-            homePen = apiMatch.home_pen ?? null;
-            awayPen = apiMatch.away_pen ?? null;
-            phase = apiMatch.phase || 'FT';
-            status = 'finished';
-            console.log(`Using official WC2026 API score for match ${match.id} (FT): ${homeScore} - ${awayScore}`);
+      // === TÍNH PHÚT THI ĐẤU TỪ KICKOFF_UTC (DB) ===
+      let calculatedMinute = event.minute; // fallback (HT=45, FT=90)
+      let calculatedPhase = phase;
+
+      if (status === 'live' && match.kickoff_utc) {
+        const kickoff = new Date(match.kickoff_utc);
+        const now = new Date();
+        const elapsedFromKickoff = Math.ceil((now.getTime() - kickoff.getTime()) / 60000);
+        const matchIdStr = String(match.id);
+
+        if (phase === '1H') {
+          // Hiệp 1: đếm từ kickoff, tối đa 45 phút
+          if (elapsedFromKickoff <= 45) {
+            calculatedMinute = Math.max(1, elapsedFromKickoff);
           } else {
-            console.warn(`Match ${match.id} is finished but not found in WC2026 API`);
+            // Quá 45' mà Bongdalu vẫn báo hiệp 1 → bù giờ
+            calculatedMinute = 45;
+            calculatedPhase = '1H+';
           }
-
-          // Update match status in the local DB matches array to prevent scraping it again in next steps
-          match.status = 'finished';
-
-          // Sync detail events from thethao247 exactly once in the background
-          if (wasNotFinishedInDb) {
-            ctx?.waitUntil?.(scrapeAndSyncMatchEvents(env, ctx, match.id, match.home_team_name, match.away_team_name));
+        } else if (phase === 'HT') {
+          calculatedMinute = 45;
+        } else if (phase === '2H') {
+          // Hiệp 2: đếm từ thời điểm bắt đầu hiệp 2
+          if (!periodTransitions[matchIdStr]?.secondHalfStartedAt) {
+            // Lần đầu phát hiện hiệp 2 → dùng match[7] từ Bongdalu (chính xác hơn 'now')
+            // match[7] được Bongdalu cập nhật thành thời điểm bắt đầu hiệp 2
+            const bongdaluStart = event.bongdaluPeriodStart ? parseUtcDate(event.bongdaluPeriodStart) : null;
+            const secondHalfStart = bongdaluStart && bongdaluStart < now ? bongdaluStart : now;
+            periodTransitions[matchIdStr] = periodTransitions[matchIdStr] || {};
+            periodTransitions[matchIdStr].secondHalfStartedAt = secondHalfStart.toISOString();
+            transitionsUpdated = true;
+            const shElapsed = Math.ceil((now.getTime() - secondHalfStart.getTime()) / 60000);
+            calculatedMinute = Math.max(46, 46 + shElapsed);
+          } else {
+            // Kiểm tra và tự sửa nếu thời điểm lưu sai (ví dụ: deploy giữa trận)
+            const bongdaluStart = event.bongdaluPeriodStart ? parseUtcDate(event.bongdaluPeriodStart) : null;
+            const shStart = new Date(periodTransitions[matchIdStr].secondHalfStartedAt);
+            // Nếu Bongdalu cung cấp thời điểm bắt đầu hiệp 2 khác >2 phút so với lưu trữ → sửa lại
+            if (bongdaluStart && Math.abs(shStart.getTime() - bongdaluStart.getTime()) > 120000) {
+              periodTransitions[matchIdStr].secondHalfStartedAt = bongdaluStart.toISOString();
+              transitionsUpdated = true;
+              const shElapsed = Math.ceil((now.getTime() - bongdaluStart.getTime()) / 60000);
+              if (46 + shElapsed <= 90) {
+                calculatedMinute = 46 + shElapsed;
+              } else {
+                calculatedMinute = 90;
+                calculatedPhase = '2H+';
+              }
+            } else {
+              const shElapsed = Math.ceil((now.getTime() - shStart.getTime()) / 60000);
+              if (46 + shElapsed <= 90) {
+                calculatedMinute = 46 + shElapsed;
+              } else {
+                // Quá 90' mà Bongdalu vẫn báo hiệp 2 → bù giờ
+                calculatedMinute = 90;
+                calculatedPhase = '2H+';
+              }
+            }
           }
+        } else if (phase === 'ET') {
+          // Hiệp phụ: đếm từ thời điểm bắt đầu hiệp phụ
+          if (!periodTransitions[matchIdStr]?.extraTimeStartedAt) {
+            const bongdaluStart = event.bongdaluPeriodStart ? parseUtcDate(event.bongdaluPeriodStart) : null;
+            const extraTimeStart = bongdaluStart && bongdaluStart < now ? bongdaluStart : now;
+            periodTransitions[matchIdStr] = periodTransitions[matchIdStr] || {};
+            periodTransitions[matchIdStr].extraTimeStartedAt = extraTimeStart.toISOString();
+            transitionsUpdated = true;
+            const etElapsed = Math.ceil((now.getTime() - extraTimeStart.getTime()) / 60000);
+            calculatedMinute = Math.max(91, 91 + etElapsed);
+          } else {
+            const etStart = new Date(periodTransitions[matchIdStr].extraTimeStartedAt);
+            const etElapsed = Math.ceil((now.getTime() - etStart.getTime()) / 60000);
+            calculatedMinute = Math.max(91, 91 + etElapsed);
+          }
+        } else if (phase === 'PEN') {
+          // Loạt penalty: không cần tính phút, giữ nguyên phase PEN
+          calculatedMinute = 120;
         }
+      }
 
-        if (status === 'live' || status === 'finished') {
-          ctx?.waitUntil?.(updateMatchScoreInSupabase(env, match.id, homeScore, awayScore, status, phase, homePen, awayPen));
-        }
+      if (status === 'live' || status === 'finished') {
+        await updateMatchScoreInSupabase(env, match.id, homeScore, awayScore, status, calculatedPhase, homePen, awayPen);
+      }
 
-        return {
-          match_id: Number(match.id),
-          provider_event_id: `${match.id}_bongdalu`,
-          status: status,
-          phase: phase,
-          clock: null,
-          minute: event.minute,
-          home_score: homeScore,
-          away_score: awayScore,
-          home_pen: homePen,
-          away_pen: awayPen,
-          events: [], // Realtime Bongdalu doesn't populate detailed events
-          updated_at: new Date().toISOString(),
-        };
-      });
-
-      const data = (await Promise.all(dataPromises)).filter(Boolean);
-
-      const cachedKV = await env.WC2026_CACHE?.get('live', 'json').catch(() => null);
-      const oldData = cachedKV ? cachedKV.data : null;
-
-      const envelope = {
-        data,
-        cached: false,
-        updated_at: new Date().toISOString(),
+      return {
+        match_id: Number(match.id),
+        provider_event_id: `${match.id}_bongdalu`,
+        status: status,
+        phase: calculatedPhase,
+        clock: null,
+        minute: calculatedMinute,
+        home_score: homeScore,
+        away_score: awayScore,
+        home_pen: homePen,
+        away_pen: awayPen,
+        red_cards: event.redCards || { home: 0, away: 0 },
+        yellow_cards: event.yellowCards || { home: 0, away: 0 },
+        events: [],
       };
+    });
 
-      if (dataHasChanged(oldData, data)) {
-        console.log('Live data has changed. Updating KV cache...');
-        await env.WC2026_CACHE?.put('live', JSON.stringify(envelope));
-      } else {
-        console.log('Live data has not changed. Skipping KV write.');
-        if (cachedKV) {
-          envelope.updated_at = cachedKV.updated_at;
-        }
+    const data = (await Promise.all(dataPromises)).filter(Boolean);
+
+    // Dọn dẹp transitions của trận đã kết thúc và lưu nếu có thay đổi
+    const liveMatchIds = new Set(data.map(d => String(d.match_id)));
+    for (const key of Object.keys(periodTransitions)) {
+      if (!liveMatchIds.has(key)) {
+        delete periodTransitions[key];
+        transitionsUpdated = true;
       }
-      return envelope;
-    };
-
-    // Execute scraping steps (1 step for HTTP requests, 4 steps spaced 15s apart for scheduled cron)
-    const totalSteps = isCron ? 4 : 1;
-    let lastEnvelope = null;
-
-    for (let step = 0; step < totalSteps; step++) {
-      if (step > 0) {
-        await new Promise(resolve => setTimeout(resolve, 15000));
-      }
-      lastEnvelope = await runScrapeStep();
+    }
+    if (transitionsUpdated) {
+      await doState.storage.put('periodTransitions', periodTransitions);
     }
 
-    return lastEnvelope;
+    const cachedDO = await doState.storage.get('live');
+    const oldData = cachedDO ? cachedDO.data : null;
+
+    const envelope = {
+      data,
+      cached: false,
+      updated_at: new Date().toISOString(),
+    };
+
+    const hasActiveWs = doState.getWebSockets().length > 0;
+    const hasChanged = dataHasChanged(oldData, data);
+
+    // Ghi SQLite mỗi khi có bất kỳ thay đổi nào (bao gồm phút thi đấu)
+    // để thiết bị mới kết nối luôn nhận được dữ liệu mới nhất từ persistent storage
+    if (hasChanged) {
+      console.log('Live data has changed. Updating DO storage...');
+      await doState.storage.put('live', envelope);
+    } else {
+      console.log('No changes detected. Skipping DO storage write.');
+      if (cachedDO) {
+        envelope.updated_at = cachedDO.updated_at;
+      }
+    }
+
+    // Luôn cập nhật bộ nhớ in-memory của DO với phút mới nhất
+    doInstance.latestLiveMatches = envelope;
+
+    if (hasChanged && hasActiveWs) {
+      const sockets = doState.getWebSockets();
+      console.log(`Broadcasting matches update to ${sockets.length} WebSocket clients.`);
+      const payloadString = JSON.stringify(envelope);
+      for (const socket of sockets) {
+        try {
+          socket.send(payloadString);
+        } catch (err) {
+          console.warn("Failed to send message to socket:", err.message);
+        }
+      }
+    }
+
+    return { hasActiveOrUpcoming: true, envelope };
   } catch (error) {
     console.warn('Bongdalu refresh failed, falling back:', error.message);
-    const cached = await env.WC2026_CACHE?.get('live', 'json');
-    if (cached) return { ...cached, cached: true };
+    const cached = await doState.storage.get('live');
+    if (cached) {
+      if (!doInstance.latestLiveMatches) {
+        doInstance.latestLiveMatches = cached;
+      }
+      return { hasActiveOrUpcoming: true, envelope: { ...cached, cached: true } };
+    }
 
     const snapshots = await getSupabaseRows(env, '/rest/v1/wc2026_match_live_snapshots?select=*&order=updated_at.desc').catch(() => []);
-    return {
+    const fallbackEnvelope = {
       data: snapshots,
       cached: false,
       updated_at: new Date().toISOString(),
+    };
+    if (!doInstance.latestLiveMatches) {
+      doInstance.latestLiveMatches = fallbackEnvelope;
+    }
+    return {
+      hasActiveOrUpcoming: true,
+      envelope: fallbackEnvelope
     };
   }
 }
@@ -652,41 +912,96 @@ function parseBongdaluJs(jsText) {
   let sclasscount = 0;
   let lastCreateTime_bfIndex = '';
 
-  const lines = jsText.split('\n');
-  for (let line of lines) {
-    line = line.trim();
-    if (!line) continue;
+  const worldCupBIndices = new Set();
+  const aCandidates = [];
 
-    if (line.startsWith('A[')) {
-      const matchIdx = line.match(/^A\[(\d+)\]\s*=\s*(.*)$/);
-      if (matchIdx) {
-        const idx = parseInt(matchIdx[1], 10);
-        const arrStr = matchIdx[2].trim().replace(/;$/, '');
-        A[idx] = parseJsArrayLiteral(arrStr);
+  let pos = 0;
+  while (pos < jsText.length) {
+    let nextNL = jsText.indexOf('\n', pos);
+    if (nextNL === -1) nextNL = jsText.length;
+
+    // Fast check: Skip leading spaces if any
+    let start = pos;
+    while (start < nextNL && (jsText[start] === ' ' || jsText[start] === '\t' || jsText[start] === '\r')) {
+      start++;
+    }
+
+    if (start < nextNL) {
+      const char = jsText[start];
+      if (char === 'A' && jsText[start + 1] === '[') {
+        aCandidates.push(jsText.substring(start, nextNL));
+      } else if (char === 'B' && jsText[start + 1] === '[') {
+        const line = jsText.substring(start, nextNL);
+        const lineLower = line.toLowerCase();
+        if (lineLower.includes('world cup') || lineLower.includes('worldcup')) {
+          const closeIdx = line.indexOf(']');
+          if (closeIdx !== -1) {
+            const idx = parseInt(line.substring(2, closeIdx), 10);
+            const eqIdx = line.indexOf('=', closeIdx);
+            if (eqIdx !== -1) {
+              let arrStr = line.substring(eqIdx + 1).trim();
+              if (arrStr.endsWith(';')) arrStr = arrStr.slice(0, -1);
+              B[idx] = parseJsArrayLiteral(arrStr);
+              worldCupBIndices.add(idx);
+            }
+          }
+        }
+      } else if (char === 'v') {
+        const line = jsText.substring(start, nextNL);
+        if (line.startsWith('var matchcount')) {
+          const eqIdx = line.indexOf('=');
+          if (eqIdx !== -1) {
+            let valStr = line.substring(eqIdx + 1).trim();
+            if (valStr.endsWith(';')) valStr = valStr.slice(0, -1);
+            matchcount = parseInt(valStr, 10);
+          }
+        } else if (line.startsWith('var sclasscount')) {
+          const eqIdx = line.indexOf('=');
+          if (eqIdx !== -1) {
+            let valStr = line.substring(eqIdx + 1).trim();
+            if (valStr.endsWith(';')) valStr = valStr.slice(0, -1);
+            sclasscount = parseInt(valStr, 10);
+          }
+        } else if (line.startsWith('var lastCreateTime_bfIndex')) {
+          const eqIdx = line.indexOf('=');
+          if (eqIdx !== -1) {
+            let valStr = line.substring(eqIdx + 1).trim();
+            if (valStr.endsWith(';')) valStr = valStr.slice(0, -1);
+            if (valStr.startsWith('"') || valStr.startsWith("'")) {
+              lastCreateTime_bfIndex = valStr.slice(1, -1);
+            } else {
+              lastCreateTime_bfIndex = valStr;
+            }
+          }
+        }
       }
-    } else if (line.startsWith('B[')) {
-      const matchIdx = line.match(/^B\[(\d+)\]\s*=\s*(.*)$/);
-      if (matchIdx) {
-        const idx = parseInt(matchIdx[1], 10);
-        const arrStr = matchIdx[2].trim().replace(/;$/, '');
-        B[idx] = parseJsArrayLiteral(arrStr);
+    }
+    pos = nextNL + 1;
+  }
+
+  // Parse only A matches that belong to World Cup leagues
+  for (let i = 0; i < aCandidates.length; i++) {
+    const line = aCandidates[i];
+    const eqIdx = line.indexOf('=[');
+    if (eqIdx !== -1) {
+      const content = line.substring(eqIdx + 2);
+      const commaIdx = content.indexOf(',');
+      if (commaIdx !== -1) {
+        const nextCommaIdx = content.indexOf(',', commaIdx + 1);
+        if (nextCommaIdx !== -1) {
+          const leagueIdStr = content.substring(commaIdx + 1, nextCommaIdx).trim();
+          const leagueIdx = parseInt(leagueIdStr, 10);
+          if (worldCupBIndices.has(leagueIdx)) {
+            const closeIdx = line.indexOf(']');
+            if (closeIdx !== -1) {
+              const idx = parseInt(line.substring(2, closeIdx), 10);
+              let arrStr = line.substring(eqIdx + 1).trim();
+              if (arrStr.endsWith(';')) arrStr = arrStr.slice(0, -1);
+              A[idx] = parseJsArrayLiteral(arrStr);
+            }
+          }
+        }
       }
-    } else if (line.startsWith('C[')) {
-      const matchIdx = line.match(/^C\[(\d+)\]\s*=\s*(.*)$/);
-      if (matchIdx) {
-        const idx = parseInt(matchIdx[1], 10);
-        const arrStr = matchIdx[2].trim().replace(/;$/, '');
-        C[idx] = parseJsArrayLiteral(arrStr);
-      }
-    } else if (line.startsWith('var matchcount')) {
-      const m = line.match(/matchcount\s*=\s*(\d+)/);
-      if (m) matchcount = parseInt(m[1], 10);
-    } else if (line.startsWith('var sclasscount')) {
-      const m = line.match(/sclasscount\s*=\s*(\d+)/);
-      if (m) sclasscount = parseInt(m[1], 10);
-    } else if (line.startsWith('var lastCreateTime_bfIndex')) {
-      const m = line.match(/lastCreateTime_bfIndex\s*=\s*["']([^"']+)["']/);
-      if (m) lastCreateTime_bfIndex = m[1];
     }
   }
 
@@ -772,31 +1087,35 @@ async function fetchBongdaluLive(env) {
       minute = 90;
     } else if (bongdaluStatus > 0) {
       status = 'live';
-      phase = bongdaluStatus === 2 ? 'HT' : 'Live';
       isHt = bongdaluStatus === 2;
 
-      const now = new Date();
-      const start = parseUtcDate(match[7]);
-      if (start) {
-        const diffMs = now.getTime() - start.getTime();
-        const diffMin = Math.ceil(diffMs / 60000);
-        if (bongdaluStatus === 1) {
-          minute = Math.max(1, Math.min(45, diffMin));
-        } else if (bongdaluStatus === 2) {
-          minute = 45;
-        } else if (bongdaluStatus === 3) {
-          minute = Math.max(46, Math.min(90, 45 + diffMin));
-        } else if (bongdaluStatus === 4) {
-          minute = Math.max(91, 90 + diffMin);
-        } else {
-          minute = Math.max(1, diffMin);
-        }
+      // Mapping phase từ status code Bongdalu (đã xác nhận từ dữ liệu live):
+      // 1=Hiệp 1, 2=Nghỉ giữa hiệp, 3=Hiệp 2, 4=Hiệp phụ, 5=Penalty
+      // Phút sẽ được tính trong refreshLiveCacheAndSync từ kickoff_utc (DB)
+      if (bongdaluStatus === 1) {
+        phase = '1H';
+      } else if (bongdaluStatus === 2) {
+        phase = 'HT';
+        minute = 45;
+      } else if (bongdaluStatus === 3) {
+        phase = '2H';
+      } else if (bongdaluStatus === 4) {
+        phase = 'ET';
+      } else if (bongdaluStatus === 5) {
+        phase = 'PEN';
+      } else {
+        phase = '1H';
       }
     } else {
+      // Các trạng thái âm (ngoài -1 đã xử lý ở trên)
       if (bongdaluStatus === -10) {
         status = 'cancelled';
+      } else if (bongdaluStatus === -11) {
+        status = 'scheduled'; // To be determined
       } else if (bongdaluStatus === -12 || bongdaluStatus === -14) {
         status = 'postponed';
+      } else if (bongdaluStatus === -13) {
+        status = 'cancelled'; // Interrupted
       } else {
         status = 'scheduled';
       }
@@ -814,6 +1133,9 @@ async function fetchBongdaluLive(env) {
       phase,
       minute,
       isHt,
+      // match[7] = thời gian bắt đầu giai đoạn hiện tại từ Bongdalu
+      // (cập nhật khi chuyển hiệp, dùng làm fallback cho period transition tracking)
+      bongdaluPeriodStart: match[7] || null,
       redCards: {
         home: Number(match[13]) || 0,
         away: Number(match[14]) || 0
@@ -1337,12 +1659,24 @@ function dataHasChanged(oldData, newData) {
     if (o.match_id !== n.match_id) return true;
     if (o.status !== n.status) return true;
     if (o.phase !== n.phase) return true;
-    // Skip minute comparison to prevent KV writes every minute:
-    // if (o.minute !== n.minute) return true;
+    if (o.minute !== n.minute) return true;
     if (o.home_score !== n.home_score) return true;
     if (o.away_score !== n.away_score) return true;
     if (o.home_pen !== n.home_pen) return true;
     if (o.away_pen !== n.away_pen) return true;
+
+    // Compare red cards and yellow cards
+    const oRedHome = o.red_cards?.home ?? 0;
+    const nRedHome = n.red_cards?.home ?? 0;
+    const oRedAway = o.red_cards?.away ?? 0;
+    const nRedAway = n.red_cards?.away ?? 0;
+    if (oRedHome !== nRedHome || oRedAway !== nRedAway) return true;
+
+    const oYellowHome = o.yellow_cards?.home ?? 0;
+    const nYellowHome = n.yellow_cards?.home ?? 0;
+    const oYellowAway = o.yellow_cards?.away ?? 0;
+    const nYellowAway = n.yellow_cards?.away ?? 0;
+    if (oYellowHome !== nYellowHome || oYellowAway !== nYellowAway) return true;
     
     // Compare events list
     const oEvents = o.events || [];
@@ -1353,6 +1687,38 @@ function dataHasChanged(oldData, newData) {
       if (oEvents[j].minute !== nEvents[j].minute) return true;
       if (oEvents[j].player_name !== nEvents[j].player_name) return true;
     }
+  }
+  return false;
+}
+
+function dataHasChangedIncludingMinutes(oldData, newData) {
+  if (!oldData || !newData) return true;
+  if (!Array.isArray(oldData) || !Array.isArray(newData)) return true;
+  if (oldData.length !== newData.length) return true;
+  for (let i = 0; i < oldData.length; i++) {
+    const o = oldData[i];
+    const n = newData[i];
+    if (!o || !n) return true;
+    if (o.match_id !== n.match_id) return true;
+    if (o.status !== n.status) return true;
+    if (o.phase !== n.phase) return true;
+    if (o.minute !== n.minute) return true;
+    if (o.home_score !== n.home_score) return true;
+    if (o.away_score !== n.away_score) return true;
+    if (o.home_pen !== n.home_pen) return true;
+    if (o.away_pen !== n.away_pen) return true;
+
+    const oRedHome = o.red_cards?.home ?? 0;
+    const nRedHome = n.red_cards?.home ?? 0;
+    const oRedAway = o.red_cards?.away ?? 0;
+    const nRedAway = n.red_cards?.away ?? 0;
+    if (oRedHome !== nRedHome || oRedAway !== nRedAway) return true;
+
+    const oYellowHome = o.yellow_cards?.home ?? 0;
+    const nYellowHome = n.yellow_cards?.home ?? 0;
+    const oYellowAway = o.yellow_cards?.away ?? 0;
+    const nYellowAway = n.yellow_cards?.away ?? 0;
+    if (oYellowHome !== nYellowHome || oYellowAway !== nYellowAway) return true;
   }
   return false;
 }
