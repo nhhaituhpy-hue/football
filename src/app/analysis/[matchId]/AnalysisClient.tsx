@@ -3,7 +3,7 @@
 import React from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { Match, MatchPrediction } from '../../../types';
+import { Match, MatchPrediction, MatchOdds } from '../../../types';
 import { useMatchAnalysis } from '../../../data/hooks/use-match-analysis';
 import { 
   Calendar, 
@@ -12,21 +12,56 @@ import {
   CaretLeft, 
   Users, 
   ArrowClockwise, 
-  FileText
+  FileText,
+  Coins
 } from '@phosphor-icons/react';
 
 interface AnalysisClientProps {
   match: Match | null;
   prediction: MatchPrediction | null;
+  odds: MatchOdds | null;
 }
 
-export default function AnalysisClient({ match: initialMatch, prediction: initialPrediction }: AnalysisClientProps) {
+export default function AnalysisClient({ match: initialMatch, prediction: initialPrediction, odds: initialOdds }: AnalysisClientProps) {
   const matchId = initialMatch?.id || -1;
-  const { match, prediction } = useMatchAnalysis(
+  const { match, prediction, odds } = useMatchAnalysis(
     matchId,
     initialMatch,
-    initialPrediction
+    initialPrediction,
+    initialOdds
   );
+
+  const toHongKongOdds = (decimalStr: string | number | null | undefined): string => {
+    if (decimalStr === undefined || decimalStr === null) return '-';
+    const dec = typeof decimalStr === 'number' ? decimalStr : parseFloat(decimalStr);
+    if (isNaN(dec)) return '-';
+    const hk = dec - 1;
+    return hk >= 0 ? hk.toFixed(2) : '-';
+  };
+
+  const findMainOdd = (oddsList: any[]) => {
+    if (!Array.isArray(oddsList) || oddsList.length === 0) return null;
+    let mainOdd = oddsList[0];
+    let minDiff = Infinity;
+    for (const o of oddsList) {
+      const overVal = parseFloat(o.over || 2);
+      const underVal = parseFloat(o.under || 2);
+      const diff = Math.abs(overVal - 2) + Math.abs(underVal - 2);
+      if (diff < minDiff) {
+        minDiff = diff;
+        mainOdd = o;
+      }
+    }
+    return mainOdd;
+  };
+
+  const oddsData = odds?.odds_data || [];
+  const spreadMarket = oddsData.find((m: any) => m.name === 'Spread' || m.name === 'Asian Handicap');
+  const mainSpread = spreadMarket ? findMainOdd(spreadMarket.odds) : null;
+
+  const totalsMarket = oddsData.find((m: any) => m.name === 'Totals' || m.name === 'Goals Over/Under' || m.name === 'Total Over/Under');
+  const mainTotals = totalsMarket ? findMainOdd(totalsMarket.odds) : null;
+
 
   const lastUpdated = React.useMemo(() => {
     const dates = [
@@ -234,7 +269,103 @@ export default function AnalysisClient({ match: initialMatch, prediction: initia
         </div>
       </div>
 
+      {/* TỶ LỆ KÈO CHÂU Á & TÀI XỈU (Hong Kong Odds) */}
+      {oddsData && oddsData.length > 0 ? (
+        <div className="w-full rounded-xl fluent-acrylic border border-card-border p-5 sm:p-6 space-y-4 shadow-sm overflow-hidden relative">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-accent-win/5 blur-2xl pointer-events-none rounded-full" />
+          
+          <h3 className="text-xs sm:text-sm font-extrabold uppercase text-accent-win tracking-wider flex items-center justify-between border-b border-card-border/40 pb-2">
+            <div className="flex items-center gap-1.5">
+              <Coins size={18} className="shrink-0" />
+              <span>Tỷ lệ kèo trực tiếp (Bet365 - Tỷ lệ Hong Kong)</span>
+            </div>
+            {odds?.updated_at && (
+              <span className="text-[9px] text-foreground/45 font-medium lowercase">
+                cập nhật: {new Date(odds.updated_at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Ho_Chi_Minh' })}
+              </span>
+            )}
+          </h3>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-1 w-full">
+            {/* 1. KÈO CHẤP CHÂU Á (Asian Handicap / Spread) */}
+            <div className="rounded-xl border border-card-border bg-card-bg/15 p-5 shadow-sm space-y-4 min-w-0">
+              <div className="flex items-center justify-between border-b border-card-border/30 pb-2">
+                <h4 className="text-xs font-extrabold uppercase text-foreground/75 tracking-wider">
+                  Kèo Chấp Châu Á (Spread)
+                </h4>
+                {mainSpread && (
+                  <span className="px-2 py-0.5 rounded bg-accent-win/10 border border-accent-win/20 text-[9px] font-bold text-accent-win">
+                    {mainSpread.hdp === 0 ? 'Đồng banh (0)' : `${mainSpread.hdp < 0 ? `Chấp -${Math.abs(mainSpread.hdp)}` : `Được chấp +${mainSpread.hdp}`}`}
+                  </span>
+                )}
+              </div>
+              
+              {mainSpread ? (
+                <div className="grid grid-cols-2 gap-4 text-center">
+                  {/* Home Odds */}
+                  <div className="flex flex-col gap-1 p-3 rounded-lg bg-card-bg/25 border border-card-border/60 hover:border-accent-win/35 transition-all">
+                    <span className="text-[9px] font-bold text-foreground/50 uppercase truncate">{homeName}</span>
+                    <span className="text-[10px] text-foreground/40 font-semibold">{mainSpread.hdp < 0 ? `-${Math.abs(mainSpread.hdp)}` : `+${mainSpread.hdp}`}</span>
+                    <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainSpread.over)}</span>
+                  </div>
+                  {/* Away Odds */}
+                  <div className="flex flex-col gap-1 p-3 rounded-lg bg-card-bg/25 border border-card-border/60 hover:border-accent-win/35 transition-all">
+                    <span className="text-[9px] font-bold text-foreground/50 uppercase truncate">{awayName}</span>
+                    <span className="text-[10px] text-foreground/40 font-semibold">{mainSpread.hdp < 0 ? `+${Math.abs(mainSpread.hdp)}` : `-${mainSpread.hdp}`}</span>
+                    <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainSpread.under)}</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-foreground/45 italic py-4 text-center">Chưa có kèo chấp chính cho trận đấu này.</p>
+              )}
+            </div>
+
+            {/* 2. KÈO TÀI XỈU (Totals) */}
+            <div className="rounded-xl border border-card-border bg-card-bg/15 p-5 shadow-sm space-y-4 min-w-0">
+              <div className="flex items-center justify-between border-b border-card-border/30 pb-2">
+                <h4 className="text-xs font-extrabold uppercase text-foreground/75 tracking-wider">
+                  Kèo Tài Xỉu (Over/Under)
+                </h4>
+                {mainTotals && (
+                  <span className="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-[9px] font-bold text-emerald-400">
+                    Tài Xỉu {mainTotals.hdp}
+                  </span>
+                )}
+              </div>
+
+              {mainTotals ? (
+                <div className="grid grid-cols-2 gap-4 text-center">
+                  {/* Over Odds */}
+                  <div className="flex flex-col gap-1 p-3 rounded-lg bg-card-bg/25 border border-card-border/60 hover:border-accent-win/35 transition-all">
+                    <span className="text-[9px] font-bold text-foreground/50 uppercase">Tài (Over)</span>
+                    <span className="text-[10px] text-foreground/40 font-semibold">{mainTotals.hdp}</span>
+                    <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainTotals.over)}</span>
+                  </div>
+                  {/* Under Odds */}
+                  <div className="flex flex-col gap-1 p-3 rounded-lg bg-card-bg/25 border border-card-border/60 hover:border-accent-win/35 transition-all">
+                    <span className="text-[9px] font-bold text-foreground/50 uppercase">Xỉu (Under)</span>
+                    <span className="text-[10px] text-foreground/40 font-semibold">{mainTotals.hdp}</span>
+                    <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainTotals.under)}</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-foreground/45 italic py-4 text-center">Chưa có kèo tài xỉu chính cho trận đấu này.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="w-full rounded-xl fluent-acrylic border border-card-border p-5 text-center bg-card-bg/5 shadow-sm text-foreground/50">
+          <div className="flex flex-col items-center justify-center py-2">
+            <Coins size={28} className="text-foreground/35 mb-2 animate-pulse" />
+            <p className="text-xs font-semibold">Tỷ lệ kèo đang được cập nhật...</p>
+            <p className="text-[10px] text-foreground/40 mt-0.5">Dữ liệu tỷ lệ kèo tài xỉu và kèo chấp thời gian thực từ nhà cái sẽ hiển thị tại đây.</p>
+          </div>
+        </div>
+      )}
+
       {/* Intro / Sapo */}
+
       {prediction?.sapo && (
         <div className="w-full rounded-xl fluent-acrylic border border-card-border bg-accent-win/5 p-4 sm:p-5 text-sm leading-relaxed text-foreground/80 font-medium italic shadow-sm relative break-words">
           <div className="absolute -left-1 top-4 w-1 h-12 bg-accent-win rounded-r" />

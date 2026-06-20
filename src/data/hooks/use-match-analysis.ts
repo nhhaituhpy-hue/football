@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react';
-import { Match, MatchPrediction } from '../../types';
+import { Match, MatchPrediction, MatchOdds } from '../../types';
 import { fetchPredictionFromDb } from '../supabase/predictions.repository';
 import { fetchMatchesFromDb } from '../supabase/matches.repository';
 import { fetchTeamsFromDb } from '../supabase/teams.repository';
+import { fetchOddsFromDb } from '../supabase/odds.repository';
 import { mergeMatchData } from '../domain/merge-match-data';
 import { globalTournamentStore } from '../store/tournament.store';
 
 export function useMatchAnalysis(
   matchId: number,
   initialMatch: Match | null,
-  initialPrediction: MatchPrediction | null
+  initialPrediction: MatchPrediction | null,
+  initialOdds: MatchOdds | null
 ) {
   const [match, setMatch] = useState<Match | null>(initialMatch);
   const [prediction, setPrediction] = useState<MatchPrediction | null>(initialPrediction);
+  const [odds, setOdds] = useState<MatchOdds | null>(initialOdds);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
@@ -53,17 +56,18 @@ export function useMatchAnalysis(
     };
   }, [matchId]);
 
-  // Client-side revalidation of match highlights & predictions
+  // Client-side revalidation of match highlights, predictions & odds
   useEffect(() => {
     let active = true;
 
     async function revalidate() {
       setLoading(true);
       try {
-        const [dbMatches, dbTeams, dbPrediction] = await Promise.all([
+        const [dbMatches, dbTeams, dbPrediction, dbOdds] = await Promise.all([
           fetchMatchesFromDb(),
           fetchTeamsFromDb(),
           fetchPredictionFromDb(matchId),
+          fetchOddsFromDb(matchId),
         ]);
 
         if (!active) return;
@@ -90,6 +94,10 @@ export function useMatchAnalysis(
         if (dbPrediction) {
           setPrediction(dbPrediction);
         }
+
+        if (dbOdds) {
+          setOdds(dbOdds);
+        }
       } catch (err) {
         const errorObject = err instanceof Error ? err : new Error(String(err));
         console.error('Revalidation failed:', errorObject);
@@ -113,6 +121,7 @@ export function useMatchAnalysis(
   return {
     match,
     prediction,
+    odds,
     loading,
     error,
   };

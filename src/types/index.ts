@@ -126,3 +126,10 @@ export interface MatchPrediction {
   updated_at?: string;
 }
 
+export interface MatchOdds {
+  match_id: number;
+  bookmaker: string;
+  odds_data: any[];
+  created_at?: string;
+  updated_at?: string;
+}

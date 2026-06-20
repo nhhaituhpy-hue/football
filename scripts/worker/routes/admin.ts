@@ -4,6 +4,7 @@ import { getSupabaseRows } from '../repositories/supabase';
 import { syncWc2026Schedule } from '../jobs/schedule-sync';
 import { syncPredictionsToday } from '../jobs/prediction-sync';
 import { scrapeAndSyncMatchEvents } from '../jobs/event-sync';
+import { syncOddsFromHttp } from '../jobs/odds-sync';
 
 export async function handleAdminRoutes(request: Request, env: any): Promise<Response | null> {
   const url = new URL(request.url);
@@ -14,6 +15,14 @@ export async function handleAdminRoutes(request: Request, env: any): Promise<Res
     if (adminResult instanceof Response) return adminResult;
     await syncWc2026Schedule(env);
     return jsonCors(request, { status: 'success', message: 'Schedule and teams synced successfully' });
+  }
+
+  if (url.pathname === '/sync-odds') {
+    if (request.method !== 'POST') return jsonCors(request, { error: 'Method not allowed. Use POST.' }, 405);
+    const adminResult = await requireAdmin(request, env);
+    if (adminResult instanceof Response) return adminResult;
+    await syncOddsFromHttp(env);
+    return jsonCors(request, { status: 'success', message: 'Odds synced successfully via HTTP Polling' });
   }
 
   if (url.pathname === '/sync-predictions') {

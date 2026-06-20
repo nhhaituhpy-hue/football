@@ -130,15 +130,15 @@ export class LiveCacheObject {
     try {
       const result = await refreshLiveCacheAndSync(this.env, this);
       if (result.hasActiveOrUpcoming) {
-        console.log("Active or upcoming matches remain. Scheduling next alarm in 15s...");
-        await this.state.storage.setAlarm(Date.now() + 15000);
+        console.log("Active or upcoming matches remain. Scheduling next alarm in 60s...");
+        await this.state.storage.setAlarm(Date.now() + 60000);
       } else {
         console.log("No active or upcoming matches. Alarm loop stopping.");
       }
     } catch (err: any) {
       console.error("Durable Object alarm execution failed:", err.message);
-      // Try again in 30s in case of transient errors
-      await this.state.storage.setAlarm(Date.now() + 30000);
+      // Try again in 60s in case of transient errors
+      await this.state.storage.setAlarm(Date.now() + 60000);
     }
   }
 

@@ -1,5 +1,6 @@
 import { syncPredictionsToday } from './jobs/prediction-sync';
 import { syncWc2026Schedule } from './jobs/schedule-sync';
+import { syncOddsFromHttp } from './jobs/odds-sync';
 import { handlePublicRoutes } from './routes/public';
 import { handleAdminRoutes } from './routes/admin';
 import { LiveCacheObject } from './realtime/live-cache-do';
@@ -12,6 +13,7 @@ const worker = {
     } else if (event.cron === "0 */6 * * *") {
       ctx.waitUntil(syncWc2026Schedule(env));
     } else {
+      ctx.waitUntil(syncOddsFromHttp(env));
       const id = env.LIVE_CACHE_DO.idFromName("global_live_cache");
       const obj = env.LIVE_CACHE_DO.get(id);
       ctx.waitUntil(obj.fetch("http://do/start-alarm"));

@@ -1,11 +1,27 @@
 import { getSupabaseRows } from '../repositories/supabase';
-import { fetchThethao247Live } from '../providers/thethao247';
 import { fetchWc2026Matches } from '../providers/wc2026api';
 import { findMatchingMatch } from '../domain/match-normalizer';
 import { dataHasChanged } from '../domain/change-detector';
-import { parseUtcDate } from '../utils';
 import { scrapeAndSyncMatchEvents } from './event-sync';
 import { runLoggingJob } from '../utils/logger';
+
+function mapOddsApiStatus(apiStatus: string): string {
+  if (apiStatus === 'settled') return 'finished';
+  if (apiStatus === 'live') return 'live';
+  return 'scheduled';
+}
+
+function mapClockStatusToPhase(apiStatus: string, clock: any): string | null {
+  if (apiStatus === 'settled') return 'FT';
+  if (!clock) return null;
+  const detail = (clock.statusDetail || '').toLowerCase();
+  if (detail.includes('1st') || detail.includes('first')) return '1H';
+  if (detail.includes('2nd') || detail.includes('second')) return '2H';
+  if (detail.includes('half time') || detail.includes('halftime') || (!clock.running && clock.period === 1)) return 'HT';
+  if (detail.includes('overtime') || detail.includes('extra')) return 'ET';
+  if (detail.includes('penalties') || detail.includes('penalty')) return 'PEN';
+  return clock.statusDetail || null;
+}
 
 function liveStateHasChanged(oldData: any[] | null | undefined, newData: any[] | null | undefined): boolean {
   if (!oldData || !newData) return true;
@@ -142,30 +158,39 @@ export async function refreshLiveCacheAndSync(
       return wc2026Matches;
     };
 
-    console.log(`Executing live scrape step at ${new Date().toISOString()}...`);
-    const rawEvents = await fetchThethao247Live(env).catch(err => {
-      console.warn('Failed to fetch Thethao247 live matches:', err.message);
-      return [];
+    console.log(`Executing live Odds API sync step at ${new Date().toISOString()}...`);
+    const apiKey = env.ODDS_API_KEY || '37eb8dbab6646bbf1f5c07f35e257f27a7dc694d9627b8bd761407f8a0575725';
+    const eventsUrl = `https://api.odds-api.io/v3/events?sport=football&league=international-fifa-world-cup&apiKey=${apiKey}&limit=100`;
+
+    const eventsRes = await fetch(eventsUrl).catch(err => {
+      console.warn('Failed to fetch live events from Odds-API:', err.message);
+      return null;
     });
 
-    // Tải thời điểm chuyển giai đoạn (bắt đầu hiệp 2, hiệp phụ) từ DO storage
-    const periodTransitions = await doState.storage.get('periodTransitions') || {};
-    let transitionsUpdated = false;
+    let rawEvents: any[] = [];
+    if (eventsRes && eventsRes.ok) {
+      const parsed = await eventsRes.json().catch(() => null);
+      if (Array.isArray(parsed)) {
+        rawEvents = parsed;
+      }
+    }
 
     const dataPromises = rawEvents.map(async (event) => {
-      const match = findMatchingMatch(dbMatches, teamsById, event);
+      // Find database match using mapped team names
+      const match = findMatchingMatch(dbMatches, teamsById, { homeName: event.home, awayName: event.away });
       if (!match) return null;
 
       if (match.status === 'finished') {
         return null;
       }
 
-      let homeScore = event.homeScore;
-      let awayScore = event.awayScore;
+      let homeScore = event.scores ? Number(event.scores.home) : 0;
+      let awayScore = event.scores ? Number(event.scores.away) : 0;
       let homePen = null;
       let awayPen = null;
-      let phase = event.phase;
-      let status = event.status;
+      
+      let status = mapOddsApiStatus(event.status);
+      let calculatedPhase = mapClockStatusToPhase(event.status, event.clock);
 
       const wasNotFinishedInDb = match.status !== 'finished';
       const isNowFinished = status === 'finished';
@@ -179,7 +204,7 @@ export async function refreshLiveCacheAndSync(
           awayScore = apiMatch.away_score ?? awayScore;
           homePen = apiMatch.home_pen ?? null;
           awayPen = apiMatch.away_pen ?? null;
-          phase = (apiMatch.phase === 'FT' || apiMatch.phase === 'FT_PEN') ? apiMatch.phase : 'FT';
+          calculatedPhase = (apiMatch.phase === 'FT' || apiMatch.phase === 'FT_PEN') ? apiMatch.phase : 'FT';
           status = 'finished';
           console.log(`Using official WC2026 API score for match ${match.id} (FT): ${homeScore} - ${awayScore}`);
         } else {
@@ -189,85 +214,15 @@ export async function refreshLiveCacheAndSync(
         // Update match status in the local DB matches array
         match.status = 'finished';
 
-        // Sync detail events from thethao247
+        // Sync detail events from thethao247 (post-match detail sync)
         if (wasNotFinishedInDb) {
-          await scrapeAndSyncMatchEvents(env, null, match.id, match.home_team_name, match.away_team_name);
+          await scrapeAndSyncMatchEvents(env, null, match.id, match.home_team_name, match.away_team_name).catch(() => {});
         }
       }
 
-      // === TÍNH PHÚT THI ĐẤU TỪ KICKOFF_UTC (DB) ===
-      let calculatedMinute = event.minute; // fallback (HT=45, FT=90)
-      let calculatedPhase = phase;
-
-      if (status === 'live' && match.kickoff_utc) {
-        const kickoff = new Date(match.kickoff_utc);
-        const elapsedFromKickoff = Math.ceil((now.getTime() - kickoff.getTime()) / 60000);
-        const matchIdStr = String(match.id);
-
-        if (phase === '1H') {
-          // Hiệp 1: đếm từ kickoff, tối đa 45 phút
-          if (elapsedFromKickoff <= 45) {
-            calculatedMinute = Math.max(1, elapsedFromKickoff);
-          } else {
-            // Quá 45' mà Bongdalu vẫn báo hiệp 1 → bù giờ
-            calculatedMinute = 45;
-            calculatedPhase = '1H+';
-          }
-        } else if (phase === 'HT') {
-          calculatedMinute = 45;
-        } else if (phase === '2H') {
-          // Hiệp 2: đếm từ thời điểm bắt đầu hiệp 2
-          if (!periodTransitions[matchIdStr]?.secondHalfStartedAt) {
-            // Lần đầu phát hiện hiệp 2 → dùng match[7] từ Bongdalu (chính xác hơn 'now')
-            const bongdaluStart = event.bongdaluPeriodStart ? parseUtcDate(event.bongdaluPeriodStart) : null;
-            const secondHalfStart = bongdaluStart && bongdaluStart < now ? bongdaluStart : now;
-            periodTransitions[matchIdStr] = periodTransitions[matchIdStr] || {};
-            periodTransitions[matchIdStr].secondHalfStartedAt = secondHalfStart.toISOString();
-            transitionsUpdated = true;
-            const shElapsed = Math.ceil((now.getTime() - secondHalfStart.getTime()) / 60000);
-            calculatedMinute = Math.max(46, 46 + shElapsed);
-          } else {
-            // Kiểm tra và tự sửa nếu thời điểm lưu sai (ví dụ: deploy giữa trận)
-            const bongdaluStart = event.bongdaluPeriodStart ? parseUtcDate(event.bongdaluPeriodStart) : null;
-            const shStart = new Date(periodTransitions[matchIdStr].secondHalfStartedAt);
-            if (bongdaluStart && Math.abs(shStart.getTime() - bongdaluStart.getTime()) > 120000) {
-              periodTransitions[matchIdStr].secondHalfStartedAt = bongdaluStart.toISOString();
-              transitionsUpdated = true;
-              const shElapsed = Math.ceil((now.getTime() - bongdaluStart.getTime()) / 60000);
-              if (46 + shElapsed <= 90) {
-                calculatedMinute = 46 + shElapsed;
-              } else {
-                calculatedMinute = 90;
-                calculatedPhase = '2H+';
-              }
-            } else {
-              const shElapsed = Math.ceil((now.getTime() - shStart.getTime()) / 60000);
-              if (46 + shElapsed <= 90) {
-                calculatedMinute = 46 + shElapsed;
-              } else {
-                calculatedMinute = 90;
-                calculatedPhase = '2H+';
-              }
-            }
-          }
-        } else if (phase === 'ET') {
-          // Hiệp phụ: đếm từ thời điểm bắt đầu hiệp phụ
-          if (!periodTransitions[matchIdStr]?.extraTimeStartedAt) {
-            const bongdaluStart = event.bongdaluPeriodStart ? parseUtcDate(event.bongdaluPeriodStart) : null;
-            const extraTimeStart = bongdaluStart && bongdaluStart < now ? bongdaluStart : now;
-            periodTransitions[matchIdStr] = periodTransitions[matchIdStr] || {};
-            periodTransitions[matchIdStr].extraTimeStartedAt = extraTimeStart.toISOString();
-            transitionsUpdated = true;
-            const etElapsed = Math.ceil((now.getTime() - extraTimeStart.getTime()) / 60000);
-            calculatedMinute = Math.max(91, 91 + etElapsed);
-          } else {
-            const etStart = new Date(periodTransitions[matchIdStr].extraTimeStartedAt);
-            const etElapsed = Math.ceil((now.getTime() - etStart.getTime()) / 60000);
-            calculatedMinute = Math.max(91, 91 + etElapsed);
-          }
-        } else if (phase === 'PEN') {
-          calculatedMinute = 120;
-        }
+      let calculatedMinute = event.clock?.minute || 0;
+      if (status === 'finished') {
+        calculatedMinute = (calculatedPhase === 'FT_PEN' || calculatedPhase === 'PEN' || calculatedPhase === 'ET') ? 120 : 90;
       }
 
       if (status === 'live' || status === 'finished') {
@@ -276,7 +231,7 @@ export async function refreshLiveCacheAndSync(
 
       return {
         match_id: Number(match.id),
-        provider_event_id: `${match.id}_thethao247`,
+        provider_event_id: `${match.id}_odds_api`,
         status: status,
         phase: calculatedPhase,
         clock: null,
@@ -285,25 +240,13 @@ export async function refreshLiveCacheAndSync(
         away_score: awayScore,
         home_pen: homePen,
         away_pen: awayPen,
-        red_cards: event.redCards || { home: 0, away: 0 },
-        yellow_cards: event.yellowCards || { home: 0, away: 0 },
+        red_cards: { home: 0, away: 0 },
+        yellow_cards: { home: 0, away: 0 },
         events: [],
       };
     });
 
     const data = (await Promise.all(dataPromises)).filter(Boolean);
-
-    // Dọn dẹp transitions của trận đã kết thúc và lưu nếu có thay đổi
-    const liveMatchIds = new Set(data.map(d => String(d!.match_id)));
-    for (const key of Object.keys(periodTransitions)) {
-      if (!liveMatchIds.has(key)) {
-        delete periodTransitions[key];
-        transitionsUpdated = true;
-      }
-    }
-    if (transitionsUpdated) {
-      await doState.storage.put('periodTransitions', periodTransitions);
-    }
 
     const cachedDO = await doState.storage.get('live');
     const oldData = cachedDO ? cachedDO.data : null;
@@ -364,7 +307,7 @@ export async function refreshLiveCacheAndSync(
 
     return { hasActiveOrUpcoming: true, envelope };
   } catch (error: any) {
-    console.warn('Thethao247 refresh failed, falling back:', error.message);
+    console.warn('Odds API refresh failed, falling back:', error.message);
 
     // Sparse logging for adapter errors
     const timeSinceLastErrorLog = Date.now() - ((doInstance as any).lastErrorLogTime || 0);

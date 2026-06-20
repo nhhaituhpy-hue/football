@@ -3,8 +3,10 @@
 import React, { useEffect, useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { Match, MatchEvent } from '../types';
+import { Match, MatchEvent, MatchOdds } from '../types';
 import { fetchEventsFromDb } from '../data/supabase/events.repository';
+import { fetchOddsFromDb } from '../data/supabase/odds.repository';
+import { IS_SUPABASE_CONFIGURED } from '../data/supabase/config';
 import { SoccerBall, Television, Calendar, MapPin } from '@phosphor-icons/react';
 
 interface MatchCardProps {
@@ -17,6 +19,9 @@ interface MatchCardProps {
 export default function MatchCard({ match, isLiveWidget = false, homeTeamStanding, awayTeamStanding }: MatchCardProps) {
   const [events, setEvents] = useState<MatchEvent[]>([]);
   const [showEvents, setShowEvents] = useState(true);
+  const [odds, setOdds] = useState<MatchOdds | null>(null);
+  const [loadingOdds, setLoadingOdds] = useState(false);
+
   const { result, home_team, away_team } = match;
   const homeYellowCards = result?.yellow_cards?.home || 0;
   const homeRedCards = result?.red_cards?.home || 0;
@@ -29,6 +34,52 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
   const isLive = result?.status === 'live';
   const isFinished = result?.status === 'finished';
   const isScheduled = result?.status === 'scheduled' || !result;
+
+  const toHongKongOdds = (decimalStr: string | number | null | undefined): string => {
+    if (decimalStr === undefined || decimalStr === null) return '-';
+    const dec = typeof decimalStr === 'number' ? decimalStr : parseFloat(decimalStr);
+    if (isNaN(dec)) return '-';
+    const hk = dec - 1;
+    return hk >= 0 ? hk.toFixed(2) : '-';
+  };
+
+  const findMainOdd = (oddsList: any[]) => {
+    if (!Array.isArray(oddsList) || oddsList.length === 0) return null;
+    let mainOdd = oddsList[0];
+    let minDiff = Infinity;
+    for (const o of oddsList) {
+      const overVal = parseFloat(o.over || 2);
+      const underVal = parseFloat(o.under || 2);
+      const diff = Math.abs(overVal - 2) + Math.abs(underVal - 2);
+      if (diff < minDiff) {
+        minDiff = diff;
+        mainOdd = o;
+      }
+    }
+    return mainOdd;
+  };
+
+  const findTopOdds = (oddsList: any[], count = 2) => {
+    if (!Array.isArray(oddsList) || oddsList.length === 0) return [];
+
+    // Sao chép và tính độ lệch của từng dòng kèo so với 2.00
+    const scoredOdds = oddsList.map(o => {
+      const overVal = parseFloat(o.over || 2);
+      const underVal = parseFloat(o.under || 2);
+      const diff = Math.abs(overVal - 2) + Math.abs(underVal - 2);
+      return { o, diff };
+    });
+
+    // Sắp xếp theo độ lệch tăng dần (càng nhỏ càng gần kèo chính)
+    scoredOdds.sort((a, b) => a.diff - b.diff);
+
+    // Lấy số lượng mong muốn
+    const top = scoredOdds.slice(0, count).map(x => x.o);
+
+    // Sắp xếp theo handicap tăng dần để hiển thị đẹp mắt
+    top.sort((a, b) => (parseFloat(a.hdp) || 0) - (parseFloat(b.hdp) || 0));
+    return top;
+  };
 
   // Tải danh sách sự kiện (bàn thắng, thẻ đỏ) của trận đấu
   useEffect(() => {
@@ -50,6 +101,41 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
       active = false;
     };
   }, [match.id, result?.status, result?.home_score, result?.away_score, isScheduled, match.events]);
+
+  useEffect(() => {
+    if ((!isLive && !isScheduled) || !IS_SUPABASE_CONFIGURED) return;
+
+    let active = true;
+
+    async function loadOdds() {
+      setLoadingOdds(true);
+      try {
+        const nextOdds = await fetchOddsFromDb(match.id);
+        if (active) setOdds(nextOdds);
+      } catch (err) {
+        console.warn('Failed to fetch odds for match card:', err);
+      } finally {
+        if (active) setLoadingOdds(false);
+      }
+    }
+
+    void loadOdds();
+
+    // Polling mỗi 30 giây để cập nhật tỷ lệ kèo trực tiếp chỉ khi trận đang trực tiếp
+    let pollInterval: any;
+    if (isLive) {
+      pollInterval = setInterval(() => {
+        void loadOdds();
+      }, 30000);
+    }
+
+    return () => {
+      active = false;
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
+    };
+  }, [match.id, isLive, isScheduled]);
 
   // Lấy text hiển thị thời gian trận đấu trực tiếp từ dữ liệu Bongdalu
   const getLiveMatchTimeText = () => {
@@ -108,12 +194,11 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
   };
 
   return (
-    <div 
-      className={`relative liquid-glass transition-all duration-300 ${
-        isLive 
-          ? 'liquid-glass-live' 
-          : ''
-      } ${isLiveWidget ? 'p-6' : 'p-4 liquid-glass-hover'}`}
+    <div
+      className={`relative liquid-glass transition-all duration-300 ${isLive
+        ? 'liquid-glass-live'
+        : ''
+        } ${isLiveWidget ? 'p-6' : 'p-4 liquid-glass-hover'}`}
     >
       {/* Kênh phát sóng & Vòng đấu */}
       <div className="flex justify-between items-center mb-3">
@@ -136,7 +221,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
             <div className="relative h-12 w-12 sm:h-14 sm:w-14 rounded-lg overflow-hidden border border-white/10 shadow-sm bg-white/5">
               {home_team?.flag_url ? (
                 <Image
-                  src={home_team.flag_url} 
+                  src={home_team.flag_url}
                   alt={home_team.name_vi}
                   width={56}
                   height={56}
@@ -152,7 +237,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
             {/* Thẻ phạt đội nhà */}
             <div className="absolute -top-1 -right-1 z-20 flex gap-0.5 pointer-events-none">
               {homeYellowCards > 0 && (
-                <div 
+                <div
                   className="w-3 h-4 bg-yellow-400 border border-yellow-500 rounded-[1px] flex items-center justify-center text-[8px] font-black text-black shadow shadow-black/40"
                   title={`${homeYellowCards} thẻ vàng`}
                 >
@@ -160,7 +245,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
                 </div>
               )}
               {homeRedCards > 0 && (
-                <div 
+                <div
                   className="w-3 h-4 bg-red-600 border border-red-700 rounded-[1px] flex items-center justify-center text-[8px] font-black text-white shadow shadow-black/40"
                   title={`${homeRedCards} thẻ đỏ`}
                 >
@@ -197,7 +282,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
               </div>
             </div>
           ) : (
-            <button 
+            <button
               onClick={() => setShowEvents(!showEvents)}
               className="flex flex-col items-center group/score cursor-pointer select-none transition-transform active:scale-95 border-0 bg-transparent p-0"
               title={showEvents ? "Click để ẩn diễn biến" : "Click để xem diễn biến"}
@@ -226,11 +311,10 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
 
               {/* Trạng thái Phút thi đấu */}
               {isLive && (
-                <div className={`flex items-center gap-1 mt-2 px-2 py-0.5 rounded-md text-[10px] font-bold border ${
-                  result.phase === 'HT'
-                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                    : 'bg-red-500/10 text-red-400 live-indicator-pulse border-red-500/20'
-                }`}>
+                <div className={`flex items-center gap-1 mt-2 px-2 py-0.5 rounded-md text-[10px] font-bold border ${result.phase === 'HT'
+                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                  : 'bg-red-500/10 text-red-400 live-indicator-pulse border-red-500/20'
+                  }`}>
                   <SoccerBall size={10} className={result.phase === 'HT' ? '' : 'animate-spin-slow'} />
                   <span>{getLiveMatchTimeText()}</span>
                 </div>
@@ -256,7 +340,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
             <div className="relative h-12 w-12 sm:h-14 sm:w-14 rounded-lg overflow-hidden border border-white/10 shadow-sm bg-white/5">
               {away_team?.flag_url ? (
                 <Image
-                  src={away_team.flag_url} 
+                  src={away_team.flag_url}
                   alt={away_team.name_vi}
                   width={56}
                   height={56}
@@ -272,7 +356,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
             {/* Thẻ phạt đội khách */}
             <div className="absolute -top-1 -right-1 z-20 flex gap-0.5 pointer-events-none">
               {awayYellowCards > 0 && (
-                <div 
+                <div
                   className="w-3 h-4 bg-yellow-400 border border-yellow-500 rounded-[1px] flex items-center justify-center text-[8px] font-black text-black shadow shadow-black/40"
                   title={`${awayYellowCards} thẻ vàng`}
                 >
@@ -280,7 +364,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
                 </div>
               )}
               {awayRedCards > 0 && (
-                <div 
+                <div
                   className="w-3 h-4 bg-red-600 border border-red-700 rounded-[1px] flex items-center justify-center text-[8px] font-black text-white shadow shadow-black/40"
                   title={`${awayRedCards} thẻ đỏ`}
                 >
@@ -304,6 +388,104 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
           </span>
         </div>
       </div>
+
+      {/* Tỷ lệ kèo trực tiếp (Bet365 - tỷ lệ Hong Kong) cho trận đấu Live hoặc Sắp đá */}
+      {(isLive || isScheduled) && (
+        <div className="mt-3 pt-2.5 border-t border-white/5 space-y-1.5 text-left">
+          <div className="flex items-center justify-between text-[9px] font-bold text-foreground/40 uppercase tracking-widest">
+            <span className="flex items-center gap-1">
+              {isLive ? (
+                <>
+                  <span className="h-1.5 w-1.5 rounded-full bg-red-500 live-indicator-pulse" />
+                  Tỷ lệ kèo trực tiếp (Bet365 - HK)
+                </>
+              ) : (
+                <>
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                  Tỷ lệ kèo trận đấu (Bet365 - HK)
+                </>
+              )}
+            </span>
+          </div>
+
+          {loadingOdds && !odds ? (
+            <div className="grid grid-cols-2 gap-2 text-center text-[10px] py-1">
+              <div className="h-9 bg-white/5 border border-white/5 rounded animate-pulse" />
+              <div className="h-9 bg-white/5 border border-white/5 rounded animate-pulse" />
+            </div>
+          ) : odds ? (() => {
+            const oddsData = odds.odds_data || [];
+
+            // Tìm và gộp tất cả các mốc kèo chấp (chính + phụ)
+            const spreadMarkets = oddsData.filter((m: any) =>
+              m.name === 'Spread' || m.name === 'Asian Handicap' || m.name === 'Alternative Asian Handicap'
+            );
+            const allSpreads = spreadMarkets.flatMap((m: any) => m.odds || []);
+            const topSpreads = findTopOdds(allSpreads, 2);
+
+            // Tìm và gộp tất cả các mốc kèo tài xỉu (chính + phụ)
+            const totalsMarkets = oddsData.filter((m: any) =>
+              m.name === 'Totals' || m.name === 'Goals Over/Under' || m.name === 'Total Over/Under' || m.name === 'Alternative Goal Line'
+            );
+            const allTotals = totalsMarkets.flatMap((m: any) => m.odds || []);
+            const topTotals = findTopOdds(allTotals, 2);
+
+            if (topSpreads.length === 0 && topTotals.length === 0) {
+              return (
+                <p className="text-[10px] text-foreground/35 italic py-1 text-center">
+                  {isLive ? 'Chưa có kèo trực tiếp' : 'Chưa có tỷ lệ kèo'}
+                </p>
+              );
+            }
+
+            return (
+              <div className="grid grid-cols-2 gap-2 text-center text-[10px]">
+                {/* Kèo chấp */}
+                {topSpreads.length > 0 ? (
+                  <div className="rounded-lg bg-white/[0.03] border border-white/5 px-2 py-1.5 flex flex-col justify-center min-w-0 space-y-1">
+                    <span className="text-[8px] text-foreground/40 font-semibold mb-0.5 uppercase tracking-wider block text-center">Kèo Chấp</span>
+                    {topSpreads.map((spread: any, idx: number) => (
+                      <div key={idx} className="flex items-center justify-center gap-1 font-bold">
+                        <span className="text-foreground/75 truncate">{spread.hdp < 0 ? `-${Math.abs(spread.hdp)}` : `+${spread.hdp}`}</span>
+                        <span className="text-accent-win shrink-0">{toHongKongOdds(spread.over)}</span>
+                        <span className="text-foreground/20 font-light mx-0.5">|</span>
+                        <span className="text-foreground/75 truncate">{spread.hdp < 0 ? `+${Math.abs(spread.hdp)}` : `-${spread.hdp}`}</span>
+                        <span className="text-accent-win shrink-0">{toHongKongOdds(spread.under)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-lg bg-white/[0.01] border border-dashed border-white/5 p-1.5 flex items-center justify-center text-foreground/35 italic">
+                    Chưa có kèo chấp
+                  </div>
+                )}
+
+                {/* Kèo tài xỉu */}
+                {topTotals.length > 0 ? (
+                  <div className="rounded-lg bg-white/[0.03] border border-white/5 px-2 py-1.5 flex flex-col justify-center min-w-0 space-y-1">
+                    <span className="text-[8px] text-foreground/40 font-semibold mb-0.5 uppercase tracking-wider block text-center">Tài Xỉu</span>
+                    {topTotals.map((total: any, idx: number) => (
+                      <div key={idx} className="flex items-center justify-center gap-1 font-bold">
+                        <span className="text-foreground/50 shrink-0">Tài {total.hdp}</span>
+                        <span className="text-accent-win shrink-0">{toHongKongOdds(total.over)}</span>
+                        <span className="text-foreground/20 font-light mx-0.5">|</span>
+                        <span className="text-foreground/50 shrink-0">Xỉu {total.hdp}</span>
+                        <span className="text-accent-win shrink-0">{toHongKongOdds(total.under)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-lg bg-white/[0.01] border border-dashed border-white/5 p-1.5 flex items-center justify-center text-foreground/35 italic">
+                    Chưa có tài xỉu
+                  </div>
+                )}
+              </div>
+            );
+          })() : (
+            <p className="text-[10px] text-foreground/35 italic py-1 text-center">Đang tải tỷ lệ kèo...</p>
+          )}
+        </div>
+      )}
 
       {/* Sân vận động & Nhận định / Highlights */}
       {(match.stadium || isScheduled || (isFinished && match.highlight_url)) && !isLiveWidget && (
@@ -330,7 +512,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
               </a>
             )}
             {isScheduled && (
-              <Link 
+              <Link
                 href={`/analysis/${match.id}`}
                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gradient-to-r from-blue-500 to-purple-500 text-white hover:from-blue-400 hover:to-purple-400 transition-all text-[11px] font-bold shrink-0 cursor-pointer shadow-md shadow-blue-500/20"
               >

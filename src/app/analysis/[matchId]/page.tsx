@@ -2,6 +2,7 @@ import React from 'react';
 import { fetchMatchesFromDb } from '../../../data/supabase/matches.repository';
 import { fetchTeamsFromDb } from '../../../data/supabase/teams.repository';
 import { fetchPredictionFromDb } from '../../../data/supabase/predictions.repository';
+import { fetchOddsFromDb } from '../../../data/supabase/odds.repository';
 import { mergeMatchData } from '../../../data/domain/merge-match-data';
 import AnalysisClient from './AnalysisClient';
 
@@ -24,12 +25,14 @@ export default async function MatchAnalysisPage({ params }: PageProps) {
   
   let match = null;
   let prediction = null;
+  let odds = null;
 
   try {
-    const [dbMatches, dbTeams, dbPrediction] = await Promise.all([
+    const [dbMatches, dbTeams, dbPrediction, dbOdds] = await Promise.all([
       fetchMatchesFromDb(),
       fetchTeamsFromDb(),
       fetchPredictionFromDb(Number(matchId)),
+      fetchOddsFromDb(Number(matchId)),
     ]);
     
     const teamsById = new Map(dbTeams.map(t => [Number(t.id), t]));
@@ -38,9 +41,10 @@ export default async function MatchAnalysisPage({ params }: PageProps) {
       match = mergeMatchData(matchRow, teamsById);
     }
     prediction = dbPrediction;
+    odds = dbOdds;
   } catch (error) {
     console.error(`Failed to fetch match analysis data for ID ${matchId}:`, error);
   }
 
-  return <AnalysisClient match={match} prediction={prediction} />;
+  return <AnalysisClient match={match} prediction={prediction} odds={odds} />;
 }
