@@ -48,8 +48,8 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
     let mainOdd = oddsList[0];
     let minDiff = Infinity;
     for (const o of oddsList) {
-      const overVal = parseFloat(o.over || 2);
-      const underVal = parseFloat(o.under || 2);
+      const overVal = parseFloat(o.over || o.home || 2);
+      const underVal = parseFloat(o.under || o.away || 2);
       const diff = Math.abs(overVal - 2) + Math.abs(underVal - 2);
       if (diff < minDiff) {
         minDiff = diff;
@@ -64,8 +64,8 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
 
     // Sao chép và tính độ lệch của từng dòng kèo so với 2.00
     const scoredOdds = oddsList.map(o => {
-      const overVal = parseFloat(o.over || 2);
-      const underVal = parseFloat(o.under || 2);
+      const overVal = parseFloat(o.over || o.home || 2);
+      const underVal = parseFloat(o.under || o.away || 2);
       const diff = Math.abs(overVal - 2) + Math.abs(underVal - 2);
       return { o, diff };
     });
@@ -447,10 +447,10 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
                     {topSpreads.map((spread: any, idx: number) => (
                       <div key={idx} className="flex items-center justify-center gap-1 font-bold">
                         <span className="text-foreground/75 truncate">{spread.hdp < 0 ? `-${Math.abs(spread.hdp)}` : `+${spread.hdp}`}</span>
-                        <span className="text-accent-win shrink-0">{toHongKongOdds(spread.over)}</span>
+                        <span className="text-accent-win shrink-0">{toHongKongOdds(spread.over || spread.home)}</span>
                         <span className="text-foreground/20 font-light mx-0.5">|</span>
                         <span className="text-foreground/75 truncate">{spread.hdp < 0 ? `+${Math.abs(spread.hdp)}` : `-${spread.hdp}`}</span>
-                        <span className="text-accent-win shrink-0">{toHongKongOdds(spread.under)}</span>
+                        <span className="text-accent-win shrink-0">{toHongKongOdds(spread.under || spread.away)}</span>
                       </div>
                     ))}
                   </div>

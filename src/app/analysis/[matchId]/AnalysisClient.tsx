@@ -44,8 +44,8 @@ export default function AnalysisClient({ match: initialMatch, prediction: initia
     let mainOdd = oddsList[0];
     let minDiff = Infinity;
     for (const o of oddsList) {
-      const overVal = parseFloat(o.over || 2);
-      const underVal = parseFloat(o.under || 2);
+      const overVal = parseFloat(o.over || o.home || 2);
+      const underVal = parseFloat(o.under || o.away || 2);
       const diff = Math.abs(overVal - 2) + Math.abs(underVal - 2);
       if (diff < minDiff) {
         minDiff = diff;
@@ -56,11 +56,17 @@ export default function AnalysisClient({ match: initialMatch, prediction: initia
   };
 
   const oddsData = odds?.odds_data || [];
-  const spreadMarket = oddsData.find((m: any) => m.name === 'Spread' || m.name === 'Asian Handicap');
-  const mainSpread = spreadMarket ? findMainOdd(spreadMarket.odds) : null;
+  const spreadMarkets = oddsData.filter((m: any) =>
+    m.name === 'Spread' || m.name === 'Asian Handicap' || m.name === 'Alternative Asian Handicap'
+  );
+  const allSpreads = spreadMarkets.flatMap((m: any) => m.odds || []);
+  const mainSpread = findMainOdd(allSpreads);
 
-  const totalsMarket = oddsData.find((m: any) => m.name === 'Totals' || m.name === 'Goals Over/Under' || m.name === 'Total Over/Under');
-  const mainTotals = totalsMarket ? findMainOdd(totalsMarket.odds) : null;
+  const totalsMarkets = oddsData.filter((m: any) =>
+    m.name === 'Totals' || m.name === 'Goals Over/Under' || m.name === 'Total Over/Under' || m.name === 'Alternative Goal Line'
+  );
+  const allTotals = totalsMarkets.flatMap((m: any) => m.odds || []);
+  const mainTotals = findMainOdd(allTotals);
 
 
   const lastUpdated = React.useMemo(() => {
@@ -306,13 +312,13 @@ export default function AnalysisClient({ match: initialMatch, prediction: initia
                   <div className="flex flex-col gap-1 p-3 rounded-lg bg-card-bg/25 border border-card-border/60 hover:border-accent-win/35 transition-all">
                     <span className="text-[9px] font-bold text-foreground/50 uppercase truncate">{homeName}</span>
                     <span className="text-[10px] text-foreground/40 font-semibold">{mainSpread.hdp < 0 ? `-${Math.abs(mainSpread.hdp)}` : `+${mainSpread.hdp}`}</span>
-                    <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainSpread.over)}</span>
+                    <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainSpread.over || mainSpread.home)}</span>
                   </div>
                   {/* Away Odds */}
                   <div className="flex flex-col gap-1 p-3 rounded-lg bg-card-bg/25 border border-card-border/60 hover:border-accent-win/35 transition-all">
                     <span className="text-[9px] font-bold text-foreground/50 uppercase truncate">{awayName}</span>
                     <span className="text-[10px] text-foreground/40 font-semibold">{mainSpread.hdp < 0 ? `+${Math.abs(mainSpread.hdp)}` : `-${mainSpread.hdp}`}</span>
-                    <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainSpread.under)}</span>
+                    <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainSpread.under || mainSpread.away)}</span>
                   </div>
                 </div>
               ) : (

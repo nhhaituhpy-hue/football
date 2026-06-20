@@ -7,6 +7,7 @@ export interface Team {
   name_vi: string;
   group_name: string | null;
   flag_url: string | null;
+  aliases?: string[];
 }
 
 export interface StandingRow {

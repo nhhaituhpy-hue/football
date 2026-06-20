@@ -122,6 +122,15 @@ export function teamMatches(team: any, scrapedName: string): boolean {
     return true;
   }
 
+  // Check database-defined aliases
+  if (Array.isArray(team.aliases)) {
+    for (const alias of team.aliases) {
+      if (cleanName(alias) === cleanScraped) {
+        return true;
+      }
+    }
+  }
+
   // Common synonym normalization helpers
   if (cleanScraped.includes('congo') && cleanVi.includes('congo')) return true;
   if (cleanScraped.includes('my') && cleanVi.includes('my')) return true;
@@ -130,6 +139,7 @@ export function teamMatches(team: any, scrapedName: string): boolean {
   if ((cleanScraped.includes('arab') || cleanScraped.includes('arap')) && (cleanVi.includes('saudi') || cleanEn.includes('saudi'))) return true;
   if (cleanScraped.includes('sec') && (cleanVi.includes('czechia') || cleanEn.includes('czechia'))) return true;
   if (cleanScraped === 'thonk' && cleanVi === 'thonhiky') return true;
+  if ((cleanScraped.includes('ivory') || cleanScraped.includes('cote')) && team.code === 'CIV') return true;
 
   return false;
 }
