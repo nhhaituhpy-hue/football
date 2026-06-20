@@ -6,9 +6,8 @@ compatibility_date = "2026-05-25"
 crons = ["0 * * * *", "0 */6 * * *", "0 1 * * *"]
 
 [vars]
-BONGDALU_LIVE_URL = "https://free.bongdalu.group/gf/data/bf_vn_nt.js"
 WC2026_API_BASE_URL = "https://api.wc2026api.com"
-THETHAO247_LIVE_URL = "https://thethao247.vn/livescores/"
+THETHAO247_LIVE_URL = "https://thethao247.vn/livescores/the-gioi/vo-dich-the-gioi/"
 
 [durable_objects]
 bindings = [

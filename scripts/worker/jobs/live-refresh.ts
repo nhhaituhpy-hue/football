@@ -1,10 +1,36 @@
 import { getSupabaseRows } from '../repositories/supabase';
-import { fetchBongdaluLive } from '../providers/bongdalu';
+import { fetchThethao247Live } from '../providers/thethao247';
 import { fetchWc2026Matches } from '../providers/wc2026api';
 import { findMatchingMatch } from '../domain/match-normalizer';
 import { dataHasChanged } from '../domain/change-detector';
 import { parseUtcDate } from '../utils';
 import { scrapeAndSyncMatchEvents } from './event-sync';
+import { runLoggingJob } from '../utils/logger';
+
+function liveStateHasChanged(oldData: any[] | null | undefined, newData: any[] | null | undefined): boolean {
+  if (!oldData || !newData) return true;
+  if (!Array.isArray(oldData) || !Array.isArray(newData)) return true;
+  if (oldData.length !== newData.length) return true;
+  for (let i = 0; i < oldData.length; i++) {
+    const o = oldData[i];
+    const n = newData[i];
+    if (!o || !n) return true;
+    if (o.match_id !== n.match_id) return true;
+    if (o.status !== n.status) return true;
+    if (o.phase !== n.phase) return true;
+    if (o.home_score !== n.home_score) return true;
+    if (o.away_score !== n.away_score) return true;
+    if (o.home_pen !== n.home_pen) return true;
+    if (o.away_pen !== n.away_pen) return true;
+    const oRedHome = o.red_cards?.home ?? 0;
+    const nRedHome = n.red_cards?.home ?? 0;
+    const oRedAway = o.red_cards?.away ?? 0;
+    const nRedAway = n.red_cards?.away ?? 0;
+    if (oRedHome !== nRedHome || oRedAway !== nRedAway) return true;
+  }
+  return false;
+}
+
 
 export async function updateMatchScoreInSupabase(
   env: any,
@@ -117,8 +143,8 @@ export async function refreshLiveCacheAndSync(
     };
 
     console.log(`Executing live scrape step at ${new Date().toISOString()}...`);
-    const rawEvents = await fetchBongdaluLive(env).catch(err => {
-      console.warn('Failed to fetch Bongdalu live matches:', err.message);
+    const rawEvents = await fetchThethao247Live(env).catch(err => {
+      console.warn('Failed to fetch Thethao247 live matches:', err.message);
       return [];
     });
 
@@ -250,7 +276,7 @@ export async function refreshLiveCacheAndSync(
 
       return {
         match_id: Number(match.id),
-        provider_event_id: `${match.id}_bongdalu`,
+        provider_event_id: `${match.id}_thethao247`,
         status: status,
         phase: calculatedPhase,
         clock: null,
@@ -316,9 +342,47 @@ export async function refreshLiveCacheAndSync(
       }
     }
 
+    // Sparse logging for successful runs
+    const hasStateChanged = liveStateHasChanged(oldData, data);
+    const timeSinceLastLog = Date.now() - ((doInstance as any).lastLiveLogTime || 0);
+    const shouldLog = hasStateChanged || timeSinceLastLog > 15 * 60 * 1000;
+
+    if (shouldLog) {
+      (doInstance as any).lastLiveLogTime = Date.now();
+      try {
+        await runLoggingJob(env, 'live-refresh', async () => {
+          return {
+            rowsRead: rawEvents.length,
+            rowsWritten: data.length,
+            message: `Live refresh status. State changed: ${hasStateChanged}. Matches active: ${data.length}`
+          };
+        });
+      } catch (logErr: any) {
+        console.error('Failed to log live refresh success status:', logErr.message);
+      }
+    }
+
     return { hasActiveOrUpcoming: true, envelope };
   } catch (error: any) {
-    console.warn('Bongdalu refresh failed, falling back:', error.message);
+    console.warn('Thethao247 refresh failed, falling back:', error.message);
+
+    // Sparse logging for adapter errors
+    const timeSinceLastErrorLog = Date.now() - ((doInstance as any).lastErrorLogTime || 0);
+    const lastErrorMessage = (doInstance as any).lastErrorMessage;
+    const isNewError = error.message !== lastErrorMessage;
+
+    if (isNewError || timeSinceLastErrorLog > 5 * 60 * 1000) {
+      (doInstance as any).lastErrorLogTime = Date.now();
+      (doInstance as any).lastErrorMessage = error.message;
+      try {
+        await runLoggingJob(env, 'live-refresh-error', async () => {
+          throw error;
+        });
+      } catch {
+        // Error logged inside runLoggingJob
+      }
+    }
+
     const cached = await doState.storage.get('live');
     if (cached) {
       if (!doInstance.latestLiveMatches) {

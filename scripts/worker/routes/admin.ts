@@ -5,7 +5,7 @@ import { syncWc2026Schedule } from '../jobs/schedule-sync';
 import { syncPredictionsToday } from '../jobs/prediction-sync';
 import { scrapeAndSyncMatchEvents } from '../jobs/event-sync';
 
-export async function handleAdminRoutes(request: Request, env: any, ctx?: any): Promise<Response | null> {
+export async function handleAdminRoutes(request: Request, env: any): Promise<Response | null> {
   const url = new URL(request.url);
 
   if (url.pathname === '/sync-schedule') {

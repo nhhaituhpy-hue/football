@@ -1,5 +1,5 @@
 import { getSupabaseRows } from '../repositories/supabase';
-import { JSON_HEADERS } from '../config';
+import { makeCorsHeaders } from '../utils';
 
 export async function getStandings(env: any): Promise<Record<string, any[]>> {
   const [teams, matches] = await Promise.all([
@@ -105,9 +105,9 @@ export async function handlePublicRoutes(request: Request, env: any, ctx: any): 
     return null; // Not handled by public routes
   }
 
-  // Create the response and add Cache-Control headers
+  // Create the response with origin-validated CORS and Cache-Control headers
   const responseHeaders = {
-    ...JSON_HEADERS,
+    ...makeCorsHeaders(request),
     'Cache-Control': `public, max-age=${cacheTtl}, s-maxage=${cacheTtl}`,
   };
   

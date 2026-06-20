@@ -61,6 +61,8 @@ export async function upsertMatchEventsToSupabase(env: any, matchId: number, eve
   }
 }
 
+import { runLoggingJob } from '../utils/logger';
+
 export async function scrapeAndSyncMatchEvents(
   env: any,
   ctx: any,
@@ -68,9 +70,9 @@ export async function scrapeAndSyncMatchEvents(
   homeTeamName: string,
   awayTeamName: string
 ): Promise<void> {
-  try {
-    console.log(`Starting post-match event scraping from thethao247 for match ${matchId} (${homeTeamName} vs ${awayTeamName})...`);
-    
+  console.log(`Starting post-match event scraping from thethao247 for match ${matchId} (${homeTeamName} vs ${awayTeamName})...`);
+  
+  await runLoggingJob(env, `event-sync-match-${matchId}`, async (correlationId) => {
     // Fetch all teams from database to resolve synonyms (English/Vietnamese names)
     const dbTeams = await getSupabaseRows(env, '/rest/v1/wc2026_teams?select=*').catch(() => []);
     
@@ -79,8 +81,13 @@ export async function scrapeAndSyncMatchEvents(
     const awayTeam = dbTeams.find(t => t.name_en === awayTeamName || t.name_vi === awayTeamName);
     
     if (!homeTeam || !awayTeam) {
-      console.warn(`Could not resolve home/away team database entities for match ${matchId}: ${homeTeamName} vs ${awayTeamName}`);
-      return;
+      const errMessage = `Could not resolve home/away team database entities for match ${matchId}: ${homeTeamName} vs ${awayTeamName}`;
+      console.warn(`[${correlationId}] ${errMessage}`);
+      return {
+        rowsRead: 0,
+        rowsWritten: 0,
+        message: errMessage
+      };
     }
 
     const thethaoMatches = await fetchThethao247Live(env).catch(() => []);
@@ -92,19 +99,33 @@ export async function scrapeAndSyncMatchEvents(
     });
     
     if (match && match.detailUrl) {
-      console.log(`Found thethao247 detailUrl for match ${matchId}: ${match.detailUrl}`);
+      console.log(`[${correlationId}] Found thethao247 detailUrl for match ${matchId}: ${match.detailUrl}`);
       const eventsList = await fetchMatchEventsDetail(match.detailUrl, matchId);
       
       if (eventsList.length > 0) {
         await upsertMatchEventsToSupabase(env, matchId, eventsList);
-        console.log(`Successfully synced ${eventsList.length} events for match ${matchId} from thethao247`);
+        console.log(`[${correlationId}] Successfully synced ${eventsList.length} events for match ${matchId} from thethao247`);
+        return {
+          rowsRead: eventsList.length,
+          rowsWritten: eventsList.length,
+          message: `Successfully synced ${eventsList.length} events from thethao247`
+        };
       } else {
-        console.log(`No events parsed from detailUrl for match ${matchId}`);
+        console.log(`[${correlationId}] No events parsed from detailUrl for match ${matchId}`);
+        return {
+          rowsRead: 0,
+          rowsWritten: 0,
+          message: 'No events parsed from detailUrl'
+        };
       }
     } else {
-      console.warn(`Could not find matching thethao247 match for ${homeTeamName} vs ${awayTeamName}`);
+      const errMessage = `Could not find matching thethao247 match for ${homeTeamName} vs ${awayTeamName}`;
+      console.warn(`[${correlationId}] ${errMessage}`);
+      return {
+        rowsRead: thethaoMatches.length,
+        rowsWritten: 0,
+        message: errMessage
+      };
     }
-  } catch (err: any) {
-    console.warn(`Failed to sync events for match ${matchId} from thethao247:`, err.message);
-  }
+  });
 }

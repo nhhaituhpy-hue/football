@@ -306,165 +306,156 @@ export function parsePredictionPage(html: string, url: string): any {
   };
 }
 
+import { runLoggingJob } from '../utils/logger';
+
 export async function syncPredictionsToday(env: any): Promise<{ status: string; message: string; scraped_count?: number }> {
-  const startedAt = new Date().toISOString();
   console.log('Starting syncPredictionsToday scraper...');
   try {
-    // 1. Get matches from Supabase
-    const dbMatches = await getSupabaseRows(env, '/rest/v1/wc2026_matches?select=*')
-      .catch(error => {
-        console.warn('Failed to fetch matches from Supabase:', error.message);
-        return [];
+    const result = await runLoggingJob(env, 'prediction-sync', async (correlationId) => {
+      // 1. Get matches from Supabase
+      const dbMatches = await getSupabaseRows(env, '/rest/v1/wc2026_matches?select=*')
+        .catch(error => {
+          console.warn('Failed to fetch matches from Supabase:', error.message);
+          return [];
+        });
+
+      const now = new Date();
+      const todayYMD = getVietnamYMD(now);
+      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      const tomorrowYMD = getVietnamYMD(tomorrow);
+
+      const todayMatches = dbMatches.filter(m => {
+        const matchYMD = getVietnamYMD(m.kickoff_utc);
+        return matchYMD === todayYMD || matchYMD === tomorrowYMD;
       });
 
-    const todayYMD = getVietnamYMD(new Date());
-    const todayMatches = dbMatches.filter(m => getVietnamYMD(m.kickoff_utc) === todayYMD);
-
-    console.log(`Found ${todayMatches.length} matches scheduled for today (${todayYMD}).`);
-    if (todayMatches.length === 0) {
-      return {
-        status: 'success',
-        message: `No matches scheduled for today (${todayYMD}). Skipping scraper.`,
-        scraped_count: 0
-      };
-    }
-
-    const todayMatchTeams = todayMatches.map(m => ({
-      match: m,
-      homeCodes: getTeamNames(m.home_team_code, m.home_team_name),
-      awayCodes: getTeamNames(m.away_team_code, m.away_team_name),
-    }));
-
-    // 2. Fetch livescores page
-    const livescoresUrl = 'https://thethao247.vn/livescores/the-gioi/vo-dich-the-gioi/';
-    const response = await fetch(livescoresUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      }
-    });
-    if (!response.ok) {
-      throw new Error(`Failed to fetch livescores page: HTTP ${response.status}`);
-    }
-    const html = await response.text();
-    const $ = cheerio.load(html);
-
-    // Extract prediction links
-    const predictionLinks: { url: string; text: string }[] = [];
-    $('a').each((i, a) => {
-      const href = $(a).attr('href');
-      const text = $(a).text().trim();
-      if (href && href.includes('nhan-dinh') && href.endsWith('.html') && text.includes('Nhận định')) {
-        if (!predictionLinks.some(link => link.url === href)) {
-          predictionLinks.push({ url: href, text });
-        }
-      }
-    });
-
-    console.log(`Found ${predictionLinks.length} prediction links total on page.`);
-
-    // 3. Filter prediction links that match today's matches
-    const linksToScrape: { link: { url: string; text: string }; match: any }[] = [];
-    for (const link of predictionLinks) {
-      const textLower = link.text.toLowerCase();
-      const urlLower = link.url.toLowerCase();
-
-      const matchedMatch = todayMatchTeams.find(t => {
-        const homeMatched = t.homeCodes.some(name => {
-          const cleanName = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
-          return textLower.includes(name) || urlLower.includes(cleanName);
-        });
-        const awayMatched = t.awayCodes.some(name => {
-          const cleanName = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
-          return textLower.includes(name) || urlLower.includes(cleanName);
-        });
-        return homeMatched && awayMatched;
-      });
-
-      if (matchedMatch) {
-        linksToScrape.push({
-          link,
-          match: matchedMatch.match
-        });
-      }
-    }
-
-    console.log(`Filtered down to ${linksToScrape.length} links corresponding to today's matches.`);
-
-    let matchedCount = 0;
-    for (const item of linksToScrape) {
-      const { link, match } = item;
-      console.log(`Scraping prediction for match ID ${match.id} (${match.home_team_code} vs ${match.away_team_code}) from: ${link.url}`);
-      try {
-        const detailRes = await fetch(link.url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          }
-        });
-        if (!detailRes.ok) {
-          console.warn(`Failed to fetch prediction detail: HTTP ${detailRes.status}`);
-          continue;
-        }
-        const detailHtml = await detailRes.text();
-        const parsed = parsePredictionPage(detailHtml, link.url);
-
-        const mainScore = findScorePrediction(cheerio.load(detailHtml), match.home_team_code, match.home_team_name, match.away_team_code, match.away_team_name);
-        if (mainScore) {
-          console.log(`Found refined score prediction: "${mainScore}"`);
-          parsed.prediction_info.score = mainScore;
-        }
-
-        const predictionRow = {
-          match_id: match.id,
-          source_url: link.url,
-          title: parsed.title,
-          sapo: parsed.sapo,
-          force_info: parsed.force_info,
-          form_info: parsed.form_info,
-          prediction_info: parsed.prediction_info,
-          media_prediction: parsed.media_prediction,
-          full_analysis: parsed.full_analysis,
-          updated_at: new Date().toISOString()
+      console.log(`[${correlationId}] Found ${todayMatches.length} matches scheduled for today (${todayYMD}) or tomorrow (${tomorrowYMD}).`);
+      if (todayMatches.length === 0) {
+        return {
+          rowsRead: 0,
+          rowsWritten: 0,
+          message: `No matches scheduled for today (${todayYMD}) or tomorrow (${tomorrowYMD}). Skipping scraper.`
         };
-
-        await upsertSupabaseRows(env, '/rest/v1/wc2026_match_predictions', [predictionRow]);
-        console.log(`Successfully saved prediction for match ID ${match.id} to Supabase.`);
-        matchedCount++;
-      } catch (err) {
-        console.error(`Error scraping prediction link ${link.url}:`, err);
       }
-    }
 
-    const finishedAt = new Date().toISOString();
-    const log = {
-      source: 'thethao247_predictions_worker',
-      status: 'success',
-      message: `Worker successfully scraped and saved ${matchedCount} predictions for today's matches.`,
-      rows_read: linksToScrape.length,
-      rows_written: matchedCount,
-      started_at: startedAt,
-      finished_at: finishedAt
-    };
-    
-    await upsertSupabaseRows(env, '/rest/v1/wc2026_api_sync_log', [log]);
+      const todayMatchTeams = todayMatches.map(m => ({
+        match: m,
+        homeCodes: getTeamNames(m.home_team_code, m.home_team_name),
+        awayCodes: getTeamNames(m.away_team_code, m.away_team_name),
+      }));
+
+      // 2. Fetch livescores page
+      const livescoresUrl = 'https://thethao247.vn/livescores/the-gioi/vo-dich-the-gioi/';
+      const response = await fetch(livescoresUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch livescores page: HTTP ${response.status}`);
+      }
+      const html = await response.text();
+      const $ = cheerio.load(html);
+
+      // Extract prediction links
+      const predictionLinks: { url: string; text: string }[] = [];
+      $('a').each((i, a) => {
+        const href = $(a).attr('href');
+        const text = $(a).text().trim();
+        if (href && href.includes('nhan-dinh') && href.endsWith('.html') && text.includes('Nhận định')) {
+          if (!predictionLinks.some(link => link.url === href)) {
+            predictionLinks.push({ url: href, text });
+          }
+        }
+      });
+
+      console.log(`[${correlationId}] Found ${predictionLinks.length} prediction links total on page.`);
+
+      // 3. Filter prediction links that match today's matches
+      const linksToScrape: { link: { url: string; text: string }; match: any }[] = [];
+      for (const link of predictionLinks) {
+        const textLower = link.text.toLowerCase();
+        const urlLower = link.url.toLowerCase();
+
+        const matchedMatch = todayMatchTeams.find(t => {
+          const homeMatched = t.homeCodes.some(name => {
+            const cleanName = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+            return textLower.includes(name) || urlLower.replace(/-/g, '').includes(cleanName);
+          });
+          const awayMatched = t.awayCodes.some(name => {
+            const cleanName = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+            return textLower.includes(name) || urlLower.replace(/-/g, '').includes(cleanName);
+          });
+          return homeMatched && awayMatched;
+        });
+
+        if (matchedMatch) {
+          linksToScrape.push({
+            link,
+            match: matchedMatch.match
+          });
+        }
+      }
+
+      console.log(`[${correlationId}] Filtered down to ${linksToScrape.length} links corresponding to today's matches.`);
+
+      let matchedCount = 0;
+      for (const item of linksToScrape) {
+        const { link, match } = item;
+        console.log(`[${correlationId}] Scraping prediction for match ID ${match.id} (${match.home_team_code} vs ${match.away_team_code}) from: ${link.url}`);
+        try {
+          const detailRes = await fetch(link.url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+          });
+          if (!detailRes.ok) {
+            console.warn(`Failed to fetch prediction detail: HTTP ${detailRes.status}`);
+            continue;
+          }
+          const detailHtml = await detailRes.text();
+          const parsed = parsePredictionPage(detailHtml, link.url);
+
+          const mainScore = findScorePrediction(cheerio.load(detailHtml), match.home_team_code, match.home_team_name, match.away_team_code, match.away_team_name);
+          if (mainScore) {
+            console.log(`[${correlationId}] Found refined score prediction: "${mainScore}"`);
+            parsed.prediction_info.score = mainScore;
+          }
+
+          const predictionRow = {
+            match_id: match.id,
+            source_url: link.url,
+            title: parsed.title,
+            sapo: parsed.sapo,
+            force_info: parsed.force_info,
+            form_info: parsed.form_info,
+            prediction_info: parsed.prediction_info,
+            media_prediction: parsed.media_prediction,
+            full_analysis: parsed.full_analysis,
+            updated_at: new Date().toISOString()
+          };
+
+          await upsertSupabaseRows(env, '/rest/v1/wc2026_match_predictions', [predictionRow]);
+          console.log(`[${correlationId}] Successfully saved prediction for match ID ${match.id} to Supabase.`);
+          matchedCount++;
+        } catch (err) {
+          console.error(`[${correlationId}] Error scraping prediction link ${link.url}:`, err);
+        }
+      }
+
+      return {
+        rowsRead: linksToScrape.length,
+        rowsWritten: matchedCount,
+        message: `Worker successfully scraped and saved ${matchedCount} predictions for today's matches.`
+      };
+    });
 
     return {
       status: 'success',
-      message: log.message,
-      scraped_count: matchedCount
+      message: result.message || 'Predictions sync completed successfully.',
+      scraped_count: result.rowsWritten
     };
   } catch (error: any) {
-    console.error('Error during prediction scraping sync:', error);
-    try {
-      await upsertSupabaseRows(env, '/rest/v1/wc2026_api_sync_log', [{
-        source: 'thethao247_predictions_worker',
-        status: 'error',
-        message: error.message,
-        started_at: startedAt,
-        finished_at: new Date().toISOString()
-      }]);
-    } catch (logErr: any) {
-      console.error('Failed to log error to sync logs:', logErr.message);
-    }
     return {
       status: 'error',
       message: error.message

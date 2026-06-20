@@ -91,7 +91,7 @@ export async function fetchMatchEventsDetail(url: string, matchId: number): Prom
 }
 
 export async function fetchThethao247Live(env: any): Promise<any[]> {
-  const url = env.THETHAO247_LIVE_URL || 'https://thethao247.vn/livescores/';
+  const url = env.THETHAO247_LIVE_URL || 'https://thethao247.vn/livescores/the-gioi/vo-dich-the-gioi/';
 
   const randomUserAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
@@ -178,7 +178,9 @@ export async function fetchThethao247Live(env: any): Promise<any[]> {
       status: isLive ? 'live' : isFinished ? 'finished' : 'scheduled',
       minute,
       isHt,
-      detailUrl
+      detailUrl,
+      redCards: { home: 0, away: 0 },
+      yellowCards: { home: 0, away: 0 }
     });
   }
 

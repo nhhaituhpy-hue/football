@@ -3,7 +3,7 @@ import { syncWc2026Schedule } from './jobs/schedule-sync';
 import { handlePublicRoutes } from './routes/public';
 import { handleAdminRoutes } from './routes/admin';
 import { LiveCacheObject } from './realtime/live-cache-do';
-import { makeCorsHeaders, json } from './utils';
+import { makeCorsHeaders, jsonCors } from './utils';
 
 const worker = {
   async scheduled(event: any, env: any, ctx: any): Promise<void> {
@@ -41,7 +41,7 @@ const worker = {
 
     try {
       // 1. Try admin routes
-      const adminResponse = await handleAdminRoutes(request, env, ctx);
+      const adminResponse = await handleAdminRoutes(request, env);
       if (adminResponse) return adminResponse;
 
       // 2. Try public routes
@@ -58,9 +58,9 @@ const worker = {
         return publicResponse;
       }
 
-      return json({ error: 'Not found' }, 404);
+      return jsonCors(request, { error: 'Not found' }, 404);
     } catch (error: any) {
-      return json({ error: error.message }, 500);
+      return jsonCors(request, { error: error.message }, 500);
     }
   },
 };

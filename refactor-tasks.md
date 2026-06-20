@@ -64,8 +64,51 @@ Việc đã làm Phase 2:
 - [x] Chạy migration qua Supabase MCP.
 - [x] Test public read và Worker service-role write.
 
-### Phase 4–6 ⏳ chưa bắt đầu
+### Phase 4 — Worker Modules ⏳ cấu trúc đã triển khai, acceptance testing chưa hoàn tất
 
-- [ ] Phase 4: Worker modules.
-- [ ] Phase 5: Frontend data strategy.
+Cấu trúc file đã triển khai (khớp 100% với đề xuất trong refactor.md):
+
+- [x] `scripts/worker/index.ts` — entry point (70 dòng thay vì 2.160 dòng cũ).
+- [x] `scripts/worker/config.ts` — cấu hình.
+- [x] `scripts/worker/realtime/live-cache-do.ts` — Durable Object.
+- [x] `scripts/worker/routes/public.ts` + `admin.ts` — tách routes.
+- [x] `scripts/worker/jobs/` — live-refresh, schedule-sync, prediction-sync, event-sync.
+- [x] `scripts/worker/providers/` — bongdalu, wc2026api, thethao247.
+- [x] `scripts/worker/repositories/supabase.ts` — Supabase access.
+- [x] `scripts/worker/auth/require-admin.ts` — JWT admin middleware.
+- [x] `scripts/worker/domain/` — match-normalizer, change-detector.
+- [x] `wrangler.worker.toml` trỏ sang `scripts/worker/index.ts`.
+- [x] Xóa file cũ `scripts/cloudflare_worker.js` (2.160 dòng).
+- [x] Sửa CORS: public routes chuyển từ wildcard `*` sang whitelist.
+- [x] Acceptance: Public endpoint response không đổi contract.
+- [x] Acceptance: WebSocket vẫn reconnect và nhận live data.
+- [x] Acceptance: Alarm chỉ chạy khi có trận active/upcoming.
+- [ ] Acceptance: Số Supabase PATCH giảm đáng kể.
+- [x] Acceptance: Bundle dưới giới hạn Free tier.
+- [x] Acceptance: Cron vẫn chỉ dùng 3 trigger.
+
+### Phase 5 — Frontend Data Strategy ⏳ cấu trúc đã triển khai, acceptance testing hoàn tất 1 số mục
+
+Data layer mới đã triển khai (khớp đề xuất trong refactor.md):
+
+- [x] `src/data/supabase/` — matches, teams, predictions, events repositories.
+- [x] `src/data/worker/` — live.client, websocket.client.
+- [x] `src/data/domain/` — merge-match-data, calculate-standings (pure functions).
+- [x] `src/data/hooks/` — use-tournament-data, use-live-matches, use-match-analysis.
+- [x] `src/data/store/tournament.store.ts` — centralized store.
+- [x] Fetch teams + matches song song đúng 1 lần (Promise.all).
+- [x] WebSocket message chỉ cập nhật live overlay, không re-fetch.
+- [x] Exponential backoff có giới hạn 30s.
+- [x] Không reconnect khi không còn subscriber.
+- [x] `dataManager.ts` cũ đã loại bỏ.
+- [x] ESLint 0 errors / 0 warnings.
+- [x] Build 111 trang, 104 analysis routes.
+- [x] Acceptance: Prediction mới hiển thị không cần deploy.
+- [x] Acceptance: Highlight mới hiển thị không cần deploy.
+- [x] Acceptance: Worker lỗi vẫn xem được schedule.
+- [ ] Acceptance: Supabase lỗi tạm không crash UI.
+- [ ] Acceptance: Loading/error/empty states rõ ràng.
+
+### Phase 6 — Observability ❌ chưa bắt đầu
+
 - [ ] Phase 6: Observability.

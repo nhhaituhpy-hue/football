@@ -366,8 +366,8 @@ export default function AdminPage() {
   if (!isAuthenticated || !isAdmin) {
     return (
       <div className="flex-1 flex items-center justify-center py-12 px-4">
-        <div className="w-full max-w-md rounded-2xl border border-card-border bg-card-bg/40 backdrop-blur-md p-8 shadow-2xl relative overflow-hidden transition-all duration-300">
-          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-red-500" />
+        <div className="w-full max-w-md rounded-2xl border border-card-border bg-card-bg/60 dark:bg-card-bg/40 backdrop-blur-md p-8 shadow-2xl relative overflow-hidden transition-all duration-300">
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-red-500" />
           <div className="absolute -top-20 -left-20 w-40 h-40 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none" />
 
@@ -375,7 +375,7 @@ export default function AdminPage() {
             <div className="h-12 w-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white shadow-lg shadow-blue-500/20 mb-3">
               <SignIn size={24} weight="bold" />
             </div>
-            <h1 className="text-xl font-extrabold tracking-wider text-center uppercase bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-red-400">
+            <h1 className="text-xl font-extrabold tracking-wider text-center uppercase bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-red-600 dark:from-blue-400 dark:to-red-400">
               Quản trị Hệ thống
             </h1>
             <p className="text-xs text-foreground/50 mt-1">
@@ -391,8 +391,12 @@ export default function AdminPage() {
           )}
 
           <form onSubmit={handleLogin} className="space-y-4">
-            <div className="relative">
-              <Envelope size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-foreground/40" />
+            <div className={`flex items-center gap-3 py-3 px-4 rounded-xl border bg-white/50 dark:bg-black/20 transition-all duration-300 ${
+              authError 
+                ? 'border-red-500/50 focus-within:border-red-500 focus-within:ring-1 focus-within:ring-red-500/20' 
+                : 'border-black/10 dark:border-white/10 focus-within:border-blue-500 dark:focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-500/20'
+            }`}>
+              <Envelope size={16} className="text-foreground/40 shrink-0" />
               <input
                 type="email"
                 value={email}
@@ -401,18 +405,22 @@ export default function AdminPage() {
                   if (authError) setAuthError('');
                 }}
                 placeholder="Email"
-                className={`w-full py-3 pl-10 pr-4 rounded-xl border bg-black/20 focus:outline-none transition-all duration-300 text-sm ${
+                className={`w-full bg-transparent focus:outline-none text-sm ${
                   authError 
-                    ? 'border-red-500/50 focus:border-red-500 focus:ring-1 focus:ring-red-500/20 text-red-400' 
-                    : 'border-white/10 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 text-foreground'
+                    ? 'text-red-500 dark:text-red-400 placeholder:text-red-500/30' 
+                    : 'text-foreground placeholder:text-foreground/45'
                 }`}
                 autoFocus
                 autoComplete="email"
               />
             </div>
 
-            <div className="relative">
-              <LockKey size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-foreground/40" />
+            <div className={`flex items-center gap-3 py-3 px-4 rounded-xl border bg-white/50 dark:bg-black/20 transition-all duration-300 ${
+              authError 
+                ? 'border-red-500/50 focus-within:border-red-500 focus-within:ring-1 focus-within:ring-red-500/20' 
+                : 'border-black/10 dark:border-white/10 focus-within:border-blue-500 dark:focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-500/20'
+            }`}>
+              <LockKey size={16} className="text-foreground/40 shrink-0" />
               <input
                 type="password"
                 value={password}
@@ -421,10 +429,10 @@ export default function AdminPage() {
                   if (authError) setAuthError('');
                 }}
                 placeholder="Mật khẩu"
-                className={`w-full py-3 pl-10 pr-4 rounded-xl border bg-black/20 focus:outline-none transition-all duration-300 text-sm ${
+                className={`w-full bg-transparent focus:outline-none text-sm ${
                   authError 
-                    ? 'border-red-500/50 focus:border-red-500 focus:ring-1 focus:ring-red-500/20 text-red-400' 
-                    : 'border-white/10 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 text-foreground'
+                    ? 'text-red-500 dark:text-red-400 placeholder:text-red-500/30' 
+                    : 'text-foreground placeholder:text-foreground/45'
                 }`}
                 autoComplete="current-password"
               />
