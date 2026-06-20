@@ -21,6 +21,9 @@ const ALIASES = {
   'congo dr': ['congo dr', 'dr congo', 'congo'],
   'cabo verde': ['cabo verde', 'cape verde'],
   'czechia': ['czechia', 'czech republic'],
+  'turkey': ['turkey', 'turkiye', 'türkiye'],
+  'ir iran': ['ir iran', 'iran'],
+  'cote divoire': ['cote divoire', 'cote d-ivoire', 'ivory coast'],
 };
 
 function normalizeText(text) {
