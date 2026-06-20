@@ -14,10 +14,12 @@ import {
   Warning, 
   Lock, 
   ArrowClockwise,
-  FilmStrip
+  FilmStrip,
+  Cpu,
+  Lightning
 } from '@phosphor-icons/react';
 
-export default function AddHighlightPage() {
+export default function AdminPage() {
   // Authentication states
   const [pin, setPin] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -33,6 +35,10 @@ export default function AddHighlightPage() {
   // Edit & Save states
   const [highlightUrls, setHighlightUrls] = useState<Record<number, string>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
+
+  // Manual Trigger states
+  const [syncingEvents, setSyncingEvents] = useState(false);
+  const [triggeringWorkflow, setTriggeringWorkflow] = useState(false);
   
   // Toast notifications
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -96,7 +102,6 @@ export default function AddHighlightPage() {
     } else {
       setAuthError(true);
       setPin('');
-      // Vibrate if supported
       if (typeof window !== 'undefined' && navigator.vibrate) {
         navigator.vibrate(100);
       }
@@ -162,9 +167,47 @@ export default function AddHighlightPage() {
     }
   };
 
+  // Sync Events Today via Worker
+  const handleSyncEventsToday = async () => {
+    setSyncingEvents(true);
+    try {
+      const workerUrl = process.env.NEXT_PUBLIC_WORKER_API_BASE_URL || 'https://lichworldcup-live.nhhai-tuhpy.workers.dev';
+      const response = await fetch(`${workerUrl}/sync-events-today`);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Lỗi không xác định từ Worker');
+      }
+      showToast('success', `Đồng bộ sự kiện thành công! Đã quét và cập nhật các trận đấu hôm nay.`);
+      loadMatches(); // Reload match details to see score/events updates
+    } catch (error: any) {
+      console.error('Lỗi khi đồng bộ sự kiện:', error);
+      showToast('error', error.message || 'Không thể kết nối tới Worker để đồng bộ sự kiện.');
+    } finally {
+      setSyncingEvents(false);
+    }
+  };
+
+  // Trigger GitHub Actions Workflow
+  const handleTriggerHighlightsWorkflow = async () => {
+    setTriggeringWorkflow(true);
+    try {
+      const workerUrl = process.env.NEXT_PUBLIC_WORKER_API_BASE_URL || 'https://lichworldcup-live.nhhai-tuhpy.workers.dev';
+      const response = await fetch(`${workerUrl}/trigger-highlights-workflow`);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Lỗi không xác định từ Worker');
+      }
+      showToast('success', 'Kích hoạt GitHub Actions cào link highlight thành công!');
+    } catch (error: any) {
+      console.error('Lỗi khi kích hoạt workflow:', error);
+      showToast('error', error.message || 'Kích hoạt thất bại. Hãy chắc chắn đã cấu hình GITHUB_PAT cho Cloudflare Worker.');
+    } finally {
+      setTriggeringWorkflow(false);
+    }
+  };
+
   // Filter logic
   const filteredMatches = matches.filter(match => {
-    // Search query match
     const homeName = match.home_team_name?.toLowerCase() || '';
     const awayName = match.away_team_name?.toLowerCase() || '';
     const homeCode = match.home_team_code?.toLowerCase() || '';
@@ -172,14 +215,12 @@ export default function AddHighlightPage() {
     const query = searchQuery.toLowerCase();
     const matchesSearch = homeName.includes(query) || awayName.includes(query) || homeCode.includes(query) || awayCode.includes(query);
 
-    // Status filter
     const status = match.result?.status;
     let matchesStatus = true;
     if (statusFilter === 'finished') matchesStatus = status === 'finished';
     else if (statusFilter === 'scheduled') matchesStatus = status === 'scheduled';
     else if (statusFilter === 'live') matchesStatus = status === 'live';
 
-    // Highlight filter
     const currentUrl = highlightUrls[match.id];
     let matchesHighlight = true;
     if (highlightFilter === 'has_hl') matchesHighlight = !!currentUrl;
@@ -193,7 +234,6 @@ export default function AddHighlightPage() {
     return (
       <div className="flex-1 flex items-center justify-center py-12 px-4">
         <div className="w-full max-w-md rounded-2xl border border-card-border bg-card-bg/40 backdrop-blur-md p-8 shadow-2xl relative overflow-hidden transition-all duration-300">
-          {/* Neon gradient glows */}
           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-red-500" />
           <div className="absolute -top-20 -left-20 w-40 h-40 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none" />
@@ -203,10 +243,10 @@ export default function AddHighlightPage() {
               <Key size={24} weight="bold" />
             </div>
             <h1 className="text-xl font-extrabold tracking-wider text-center uppercase bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-red-400">
-              Xác thực Quản trị
+              Quản trị Hệ thống
             </h1>
             <p className="text-xs text-foreground/50 mt-1">
-              Nhập mã PIN để quản lý video highlights
+              Nhập mã PIN để mở khóa các công cụ điều khiển
             </p>
           </div>
 
@@ -251,7 +291,7 @@ export default function AddHighlightPage() {
     );
   }
 
-  // Render Main Match Editor Screen
+  // Render Main Control Panel Screen
   return (
     <div className="flex-1 space-y-6 animate-fade-in pb-12">
       {/* Toast Notification */}
@@ -274,10 +314,10 @@ export default function AddHighlightPage() {
           </div>
           <div>
             <h1 className="text-lg font-extrabold uppercase tracking-wide bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-purple-400 to-red-400">
-              Quản lý Highlights
+              Quản trị Livescore & Highlights
             </h1>
             <p className="text-[11px] text-foreground/50 font-medium">
-              Thêm liên kết video highlight chính thức của các trận đấu World Cup 2026
+              Kích hoạt đồng bộ livescore/sự kiện và cập nhật liên kết video highlight chính thức
             </p>
           </div>
         </div>
@@ -297,6 +337,52 @@ export default function AddHighlightPage() {
           >
             <Lock size={15} />
             Đóng phiên
+          </button>
+        </div>
+      </div>
+
+      {/* Admin Quick Actions panel */}
+      <div className="bg-card-bg/40 border border-card-border p-5 rounded-2xl backdrop-blur-md shadow-sm relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 rounded-full blur-2xl pointer-events-none" />
+        <div className="absolute bottom-0 left-0 w-32 h-32 bg-purple-500/5 rounded-full blur-2xl pointer-events-none" />
+
+        <h2 className="text-sm font-extrabold uppercase tracking-wide text-foreground mb-2 flex items-center gap-2">
+          <Cpu size={18} className="text-blue-400" />
+          Công cụ đồng bộ thủ công (Admin Tools)
+        </h2>
+        <p className="text-xs text-foreground/50 mb-5 font-medium">
+          Ấn nút để kích hoạt đồng bộ hoặc cào dữ liệu ngay lập tức mà không cần đợi thời gian chạy tự động của hệ thống.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Button 1 */}
+          <button
+            onClick={handleSyncEventsToday}
+            disabled={syncingEvents || loading}
+            className={`flex items-center justify-start gap-4 px-5 py-4 rounded-xl border border-white/5 bg-white/5 hover:bg-white/10 text-xs font-bold transition-all duration-300 transform active:scale-98 cursor-pointer disabled:opacity-50 disabled:pointer-events-none ${
+              syncingEvents ? 'text-blue-400 border-blue-500/20 bg-blue-500/5' : 'text-foreground'
+            }`}
+          >
+            <Cpu size={22} className={syncingEvents ? 'animate-spin text-blue-400' : 'text-blue-400'} />
+            <div className="text-left">
+              <p className="font-extrabold text-sm">Cập nhật diễn biến trận đấu trong ngày</p>
+              <p className="text-[10px] text-foreground/40 font-medium mt-0.5">Cào diễn biến chi tiết từ thethao247 cho các trận đấu hôm nay bị lỗi dữ liệu</p>
+            </div>
+          </button>
+
+          {/* Button 2 */}
+          <button
+            onClick={handleTriggerHighlightsWorkflow}
+            disabled={triggeringWorkflow || loading}
+            className={`flex items-center justify-start gap-4 px-5 py-4 rounded-xl border border-white/5 bg-white/5 hover:bg-white/10 text-xs font-bold transition-all duration-300 transform active:scale-98 cursor-pointer disabled:opacity-50 disabled:pointer-events-none ${
+              triggeringWorkflow ? 'text-purple-400 border-purple-500/20 bg-purple-500/5' : 'text-foreground'
+            }`}
+          >
+            <Lightning size={22} className={triggeringWorkflow ? 'animate-bounce text-purple-400' : 'text-purple-400'} />
+            <div className="text-left">
+              <p className="font-extrabold text-sm">Cập nhật link Highlight tự động</p>
+              <p className="text-[10px] text-foreground/40 font-medium mt-0.5">Kích hoạt GitHub Actions cào link highlight từ FIFA.com cho các trận đã kết thúc</p>
+            </div>
           </button>
         </div>
       </div>

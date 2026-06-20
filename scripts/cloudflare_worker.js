@@ -260,6 +260,75 @@ const worker = {
         });
       }
 
+      if (url.pathname === '/sync-events-today') {
+        const now = new Date();
+        const localTime = new Date(now.getTime() + (7 * 60 * 60 * 1000));
+        const year = localTime.getUTCFullYear();
+        const month = String(localTime.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(localTime.getUTCDate()).padStart(2, '0');
+        const todayLocalDateStr = `${year}-${month}-${day}`;
+
+        const startOfToday = `${todayLocalDateStr}T00:00:00+07:00`;
+        const endOfToday = `${todayLocalDateStr}T23:59:59+07:00`;
+
+        console.log(`Syncing all events today: ${startOfToday} -> ${endOfToday}`);
+        const dbMatches = await getSupabaseRows(env, `/rest/v1/wc2026_matches?kickoff_utc=gte.${startOfToday}&kickoff_utc=lte.${endOfToday}`);
+        
+        if (!dbMatches || dbMatches.length === 0) {
+          return json({ status: 'success', message: 'No matches scheduled for today', synced_matches: [] });
+        }
+
+        const results = [];
+        for (const match of dbMatches) {
+          if (match.status === 'finished' || match.status === 'live' || match.status === 'in_progress') {
+            await scrapeAndSyncMatchEvents(env, null, match.id, match.home_team_name, match.away_team_name);
+            results.push({
+              id: match.id,
+              home: match.home_team_name,
+              away: match.away_team_name,
+              status: match.status
+            });
+          }
+        }
+
+        return json({
+          status: 'success',
+          message: `Synced events for ${results.length} matches today`,
+          synced_matches: results
+        });
+      }
+
+      if (url.pathname === '/trigger-highlights-workflow') {
+        const token = env.GITHUB_PAT;
+        if (!token) {
+          return json({ error: 'Missing GITHUB_PAT secret/environment variable in worker configuration' }, 500);
+        }
+
+        const githubUrl = 'https://api.github.com/repos/nhhaituhpy-hue/football/actions/workflows/sync_highlights.yml/dispatches';
+        const response = await fetch(githubUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'Cloudflare-Worker-Football',
+            'Content-Type': 'application/json',
+            'X-GitHub-Api-Version': '2022-11-28'
+          },
+          body: JSON.stringify({ ref: 'main' })
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          console.error(`GitHub API error: ${response.status} - ${errText}`);
+          return json({ error: `GitHub API error: ${response.status} - ${errText}` }, 500);
+        }
+
+        return json({
+          status: 'success',
+          message: 'GitHub Action highlight sync workflow triggered successfully'
+        });
+      }
+
       if (url.pathname === '/live') {
         const id = env.LIVE_CACHE_DO.idFromName("global_live_cache");
         const obj = env.LIVE_CACHE_DO.get(id);
