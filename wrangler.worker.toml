@@ -8,6 +8,9 @@ crons = ["*/5 * * * *", "0 */6 * * *", "0 1 * * *"]
 [vars]
 WC2026_API_BASE_URL = "https://api.wc2026api.com"
 THETHAO247_LIVE_URL = "https://thethao247.vn/livescores/the-gioi/vo-dich-the-gioi/"
+GITHUB_REPO_OWNER = "nhhaituhpy-hue"
+GITHUB_REPO_NAME = "football"
+GITHUB_WORKFLOW_FILE = "sync_highlights.yml"
 
 [durable_objects]
 bindings = [

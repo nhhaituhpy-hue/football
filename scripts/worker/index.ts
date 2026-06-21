@@ -1,6 +1,7 @@
 import { syncPredictionsToday } from './jobs/prediction-sync';
 import { syncWc2026Schedule } from './jobs/schedule-sync';
 import { syncOddsFromHttp } from './jobs/odds-sync';
+import { syncHighlightsTrigger } from './jobs/trigger-highlight-sync';
 import { handlePublicRoutes } from './routes/public';
 import { handleAdminRoutes } from './routes/admin';
 import { LiveCacheObject } from './realtime/live-cache-do';
@@ -15,6 +16,7 @@ const worker = {
       ctx.waitUntil(syncOddsFromHttp(env, true)); // Full sync every 6 hours
     } else {
       ctx.waitUntil(syncOddsFromHttp(env, false)); // Express sync (live + <24h)
+      ctx.waitUntil(syncHighlightsTrigger(env));
       const id = env.LIVE_CACHE_DO.idFromName("global_live_cache");
       const obj = env.LIVE_CACHE_DO.get(id);
       ctx.waitUntil(obj.fetch("http://do/start-alarm"));

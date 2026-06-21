@@ -138,6 +138,7 @@ export interface OddItem {
 export interface OddMarket {
   name: string;
   odds: OddItem[];
+  updatedAt?: string;
 }
 
 export interface MatchOdds {

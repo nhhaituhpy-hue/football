@@ -58,8 +58,21 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
     // Sắp xếp theo độ lệch tăng dần (càng nhỏ càng gần kèo chính)
     scoredOdds.sort((a, b) => a.diff - b.diff);
 
+    // Loại bỏ các dòng kèo trùng handicap (giữ lại dòng kèo có diff nhỏ nhất)
+    const seenHdps = new Set<string>();
+    const uniqueScored: typeof scoredOdds = [];
+    for (const item of scoredOdds) {
+      if (item.o.hdp !== undefined && item.o.hdp !== null) {
+        const hdpStr = item.o.hdp.toString();
+        if (!seenHdps.has(hdpStr)) {
+          seenHdps.add(hdpStr);
+          uniqueScored.push(item);
+        }
+      }
+    }
+
     // Lấy số lượng mong muốn
-    const top = scoredOdds.slice(0, count).map(x => x.o);
+    const top = uniqueScored.slice(0, count).map(x => x.o);
 
     // Sắp xếp theo handicap tăng dần để hiển thị đẹp mắt
     top.sort((a, b) => (parseFloat(a.hdp.toString()) || 0) - (parseFloat(b.hdp.toString()) || 0));
@@ -407,7 +420,21 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
               <div className="h-9 bg-white/5 border border-white/5 rounded animate-pulse" />
             </div>
           ) : odds ? (() => {
-            const oddsData = odds.odds_data || [];
+            let oddsData = odds.odds_data || [];
+            if (!isScheduled) {
+              const latestTime = oddsData.reduce((max, m) => {
+                if (!m.updatedAt) return max;
+                const t = new Date(m.updatedAt).getTime();
+                return t > max ? t : max;
+              }, 0);
+              if (latestTime > 0) {
+                oddsData = oddsData.filter(m => {
+                  if (!m.updatedAt) return true;
+                  return (latestTime - new Date(m.updatedAt).getTime()) < 15 * 60 * 1000;
+                });
+              }
+            }
+
 
             // Tìm và gộp tất cả các mốc kèo chấp (chính + phụ)
             const spreadMarkets = oddsData.filter((m: OddMarket) =>

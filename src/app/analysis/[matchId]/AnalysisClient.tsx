@@ -55,7 +55,21 @@ export default function AnalysisClient({ match: initialMatch, prediction: initia
     return mainOdd;
   };
 
-  const oddsData = odds?.odds_data || [];
+  const isScheduled = match?.result?.status === 'scheduled' || !match?.result;
+  let oddsData = odds?.odds_data || [];
+  if (!isScheduled && oddsData.length > 0) {
+    const latestTime = oddsData.reduce((max, m) => {
+      if (!m.updatedAt) return max;
+      const t = new Date(m.updatedAt).getTime();
+      return t > max ? t : max;
+    }, 0);
+    if (latestTime > 0) {
+      oddsData = oddsData.filter(m => {
+        if (!m.updatedAt) return true;
+        return (latestTime - new Date(m.updatedAt).getTime()) < 15 * 60 * 1000;
+      });
+    }
+  }
   const spreadMarkets = oddsData.filter((m: OddMarket) =>
     m.name === 'Spread' || m.name === 'Asian Handicap' || m.name === 'Alternative Asian Handicap'
   );
