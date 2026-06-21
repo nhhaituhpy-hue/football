@@ -1,6 +1,8 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Image from 'next/image';
 import { X } from '@phosphor-icons/react';
 import { Match, Team, StandingRow } from '../types';
@@ -16,19 +18,26 @@ interface TeamStatsModalProps {
 }
 
 export default function TeamStatsModal({ activeTeamStats, onClose }: TeamStatsModalProps) {
-  if (!activeTeamStats) return null;
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    return () => setMounted(false);
+  }, []);
+
+  if (!mounted || !activeTeamStats) return null;
   
   const groupName = activeTeamStats.team.group_name;
   const groupRows = groupName ? globalTournamentStore.getStandings()[groupName] : undefined;
   const teamRank = groupRows ? groupRows.findIndex(r => r.team.id === activeTeamStats.team.id) + 1 : null;
 
-  return (
+  return createPortal(
     <div 
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-fade-in p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-transparent p-4 animate-fade-in"
       onClick={onClose}
     >
       <div 
-        className="w-full max-w-sm rounded-2xl fluent-acrylic border border-white/10 p-6 shadow-2xl relative animate-scale-up text-left overflow-hidden bg-[#1c2230]/95"
+        className="w-full max-w-sm rounded-2xl liquid-glass p-6 shadow-2xl relative text-left overflow-hidden bg-card-bg border border-card-border"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Background decorative glows */}
@@ -38,14 +47,14 @@ export default function TeamStatsModal({ activeTeamStats, onClose }: TeamStatsMo
         {/* Close Button */}
         <button 
           onClick={onClose}
-          className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-white/5 text-foreground/50 hover:text-foreground transition-colors cursor-pointer border-0 bg-transparent"
+          className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-foreground/5 text-foreground/50 hover:text-foreground transition-colors cursor-pointer border-0 bg-transparent"
         >
           <X size={16} weight="bold" />
         </button>
 
         {/* Header: Flag, Name, Rank */}
-        <div className="flex items-center gap-4 border-b border-white/5 pb-4 mb-4">
-          <div className="relative h-14 w-14 rounded-lg overflow-hidden border border-white/10 bg-white/5 shrink-0 shadow-md">
+        <div className="flex items-center gap-4 border-b border-card-border pb-4 mb-4">
+          <div className="relative h-14 w-14 rounded-lg overflow-hidden border border-card-border bg-white/5 shrink-0 shadow-md">
             {activeTeamStats.team.flag_url ? (
               <Image 
                 src={activeTeamStats.team.flag_url} 
@@ -81,22 +90,20 @@ export default function TeamStatsModal({ activeTeamStats, onClose }: TeamStatsMo
         </div>
 
         {/* Stats Summary Grid */}
-        <div className="grid grid-cols-4 gap-2 text-center bg-white/[0.02] border border-white/5 rounded-xl p-3 mb-4 select-none">
-          <div className="flex flex-col gap-0.5 border-r border-white/5">
+        <div className="grid grid-cols-4 gap-2 text-center bg-white/[0.02] border border-card-border rounded-xl p-3 mb-4 select-none">
+          <div className="flex flex-col gap-0.5 border-r border-card-border">
             <span className="text-[9px] text-foreground/45 font-bold uppercase tracking-wider">Trận</span>
             <span className="text-sm font-extrabold text-foreground">{activeTeamStats.stats?.played || 0}</span>
           </div>
-          <div className="flex flex-col gap-0.5 border-r border-white/5">
+          <div className="flex flex-col gap-0.5 border-r border-card-border">
             <span className="text-[9px] text-foreground/45 font-bold uppercase tracking-wider">T-H-B</span>
             <span className="text-sm font-extrabold text-foreground">
               {activeTeamStats.stats ? `${activeTeamStats.stats.won}-${activeTeamStats.stats.drawn}-${activeTeamStats.stats.lost}` : '0-0-0'}
             </span>
           </div>
-          <div className="flex flex-col gap-0.5 border-r border-white/5">
+          <div className="flex flex-col gap-0.5 border-r border-card-border">
             <span className="text-[9px] text-foreground/45 font-bold uppercase tracking-wider">H.Số</span>
-            <span className="text-sm font-extrabold text-foreground">
-              {activeTeamStats.stats && activeTeamStats.stats.gd > 0 ? `+${activeTeamStats.stats.gd}` : activeTeamStats.stats?.gd || 0}
-            </span>
+            <span className="text-sm font-extrabold text-foreground">{activeTeamStats.stats?.gd || 0}</span>
           </div>
           <div className="flex flex-col gap-0.5">
             <span className="text-[9px] text-foreground/45 font-bold uppercase tracking-wider">Điểm</span>
@@ -125,7 +132,7 @@ export default function TeamStatsModal({ activeTeamStats, onClose }: TeamStatsMo
                 return (
                   <div 
                     key={m.id} 
-                    className="flex items-center gap-2 p-2 rounded bg-white/[0.02] hover:bg-white/[0.04] border border-white/5 transition-colors text-xs w-full"
+                    className="flex items-center gap-2 p-2 rounded bg-white/[0.02] hover:bg-white/[0.04] border border-card-border transition-colors text-xs w-full"
                   >
                     {/* Outcome badge */}
                     <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black border shrink-0 select-none ${
@@ -166,12 +173,13 @@ export default function TeamStatsModal({ activeTeamStats, onClose }: TeamStatsMo
               })}
             </div>
           ) : (
-            <p className="text-xs text-foreground/45 italic py-3 text-center bg-white/[0.01] border border-dashed border-white/5 rounded-xl select-none">
+            <p className="text-xs text-foreground/45 italic py-3 text-center bg-white/[0.01] border border-dashed border-card-border rounded-xl select-none">
               Chưa đấu trận nào ở giải đấu này.
             </p>
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
