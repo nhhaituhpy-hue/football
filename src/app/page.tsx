@@ -1,9 +1,11 @@
 'use client';
 
 import React, { useEffect, useState, useMemo } from 'react';
-import { Match } from '../types';
+import { Match, Team, StandingRow } from '../types';
 import { useTournamentData } from '../data/hooks/use-tournament-data';
 import { playGoalSound } from '../lib/sound';
+import TeamStatsModal from '../components/TeamStatsModal';
+import { globalTournamentStore } from '../data/store/tournament.store';
 import dynamic from 'next/dynamic';
 
 const MatchCard = dynamic(() => import('../components/MatchCard'), {
@@ -55,6 +57,39 @@ function getUniqueDates(allMatches: Match[]) {
 export default function DashboardPage() {
   const { matches, standings, loading } = useTournamentData();
   const [selectedDate, setSelectedDate] = useState<string | undefined>(undefined);
+  const [activeTeamStats, setActiveTeamStats] = useState<{
+    team: Team;
+    stats: StandingRow | null;
+    history: Match[];
+  } | null>(null);
+
+  const handleFlagClick = (team: Team) => {
+    const allMatches = globalTournamentStore.getMatches();
+    const allStandings = globalTournamentStore.getStandings();
+
+    let teamStandingRow: StandingRow | null = null;
+    const groupName = team.group_name;
+    if (groupName) {
+      const groupRows = allStandings[groupName];
+      if (groupRows) {
+        teamStandingRow = groupRows.find(row => row.team.id === team.id) || null;
+      }
+    }
+
+    const history = allMatches
+      .filter(m => 
+        m.result && 
+        m.result.status === 'finished' && 
+        (m.home_team_id === team.id || m.away_team_id === team.id)
+      )
+      .sort((a, b) => new Date(a.match_time).getTime() - new Date(b.match_time).getTime());
+
+    setActiveTeamStats({
+      team,
+      stats: teamStandingRow,
+      history
+    });
+  };
 
   const activeDateRef = React.useRef<HTMLButtonElement | null>(null);
   const prevMatchesRef = React.useRef<Match[]>([]);
@@ -186,6 +221,7 @@ export default function DashboardPage() {
                 isLiveWidget={true} 
                 homeTeamStanding={getTeamStandingLabel(match.home_team_id, match.home_team?.group_name)}
                 awayTeamStanding={getTeamStandingLabel(match.away_team_id, match.away_team?.group_name)}
+                onFlagClick={handleFlagClick}
               />
             ))}
           </div>
@@ -272,6 +308,7 @@ export default function DashboardPage() {
                 match={match} 
                 homeTeamStanding={getTeamStandingLabel(match.home_team_id, match.home_team?.group_name)}
                 awayTeamStanding={getTeamStandingLabel(match.away_team_id, match.away_team?.group_name)}
+                onFlagClick={handleFlagClick}
               />
             ))}
           </div>
@@ -283,6 +320,11 @@ export default function DashboardPage() {
           </div>
         )}
       </section>
+
+      <TeamStatsModal 
+        activeTeamStats={activeTeamStats} 
+        onClose={() => setActiveTeamStats(null)} 
+      />
     </div>
   );
 }

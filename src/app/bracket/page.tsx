@@ -3,6 +3,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Info } from '@phosphor-icons/react';
 import dynamic from 'next/dynamic';
+import { Team, StandingRow, Match } from '../../types';
+import TeamStatsModal from '../../components/TeamStatsModal';
+import { globalTournamentStore } from '../../data/store/tournament.store';
 
 const MatchCard = dynamic(() => import('../../components/MatchCard'), {
   ssr: false,
@@ -16,6 +19,39 @@ const KNOCKOUT_ORDER = ['R32', 'R16', 'QF', 'SF', '3rd', 'final'];
 
 export default function BracketPage() {
   const { matches: allMatches, loading } = useTournamentData();
+  const [activeTeamStats, setActiveTeamStats] = useState<{
+    team: Team;
+    stats: StandingRow | null;
+    history: Match[];
+  } | null>(null);
+
+  const handleFlagClick = (team: Team) => {
+    const allMatchesList = globalTournamentStore.getMatches();
+    const allStandings = globalTournamentStore.getStandings();
+
+    let teamStandingRow: StandingRow | null = null;
+    const groupName = team.group_name;
+    if (groupName) {
+      const groupRows = allStandings[groupName];
+      if (groupRows) {
+        teamStandingRow = groupRows.find(row => row.team.id === team.id) || null;
+      }
+    }
+
+    const history = allMatchesList
+      .filter(m => 
+        m.result && 
+        m.result.status === 'finished' && 
+        (m.home_team_id === team.id || m.away_team_id === team.id)
+      )
+      .sort((a, b) => new Date(a.match_time).getTime() - new Date(b.match_time).getTime());
+
+    setActiveTeamStats({
+      team,
+      stats: teamStandingRow,
+      history
+    });
+  };
   
   const matches = useMemo(() => {
     return allMatches.filter((match) => match.round_code !== 'group');
@@ -138,7 +174,7 @@ export default function BracketPage() {
       ) : visibleMatches.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {visibleMatches.map((match) => (
-            <MatchCard key={match.id} match={match} />
+            <MatchCard key={match.id} match={match} onFlagClick={handleFlagClick} />
           ))}
         </div>
       ) : (
@@ -148,6 +184,11 @@ export default function BracketPage() {
           <p className="text-xs text-foreground/40 mt-1">Dữ liệu sẽ xuất hiện sau khi sync lịch 104 trận từ wc2026api.</p>
         </div>
       )}
+
+      <TeamStatsModal 
+        activeTeamStats={activeTeamStats} 
+        onClose={() => setActiveTeamStats(null)} 
+      />
     </div>
   );
 }
