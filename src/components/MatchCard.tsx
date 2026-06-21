@@ -666,9 +666,8 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
                   <div className="space-y-2 max-h-36 overflow-y-auto pr-1 scrollbar-thin">
                     {activeTeamStats.history.map((m) => {
                       const isHome = m.home_team_id === activeTeamStats.team.id;
-                      const opponent = isHome ? m.away_team : m.home_team;
-                      const opponentName = opponent?.name_vi || (isHome ? m.away_team_name : m.home_team_name) || 'Chưa xác định';
-                      const opponentCode = opponent?.code || (isHome ? m.away_team_code : m.home_team_code) || 'TBD';
+                      const homeTeamName = m.home_team?.name_vi || m.home_team_name || 'Chưa xác định';
+                      const awayTeamName = m.away_team?.name_vi || m.away_team_name || 'Chưa xác định';
                       const scoreHome = m.result?.home_score ?? 0;
                       const scoreAway = m.result?.away_score ?? 0;
                       
@@ -679,27 +678,42 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
                       return (
                         <div 
                           key={m.id} 
-                          className="flex items-center justify-between p-2 rounded bg-white/[0.02] hover:bg-white/[0.04] border border-white/5 transition-colors text-xs"
+                          className="flex items-center gap-2 p-2 rounded bg-white/[0.02] hover:bg-white/[0.04] border border-white/5 transition-colors text-xs w-full"
                         >
-                          <div className="flex items-center gap-2 min-w-0">
-                            {/* Outcome badge */}
-                            <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black border shrink-0 select-none ${
-                              outcome === 'W'
-                                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                                : outcome === 'L'
-                                ? 'bg-red-500/20 text-red-400 border-red-500/30'
-                                : 'bg-white/10 text-foreground/50 border-white/10'
-                            }`}>
-                              {outcome === 'W' ? 'T' : outcome === 'L' ? 'B' : 'H'}
-                            </span>
-                            <span className="font-semibold text-foreground/75 truncate animate-fade-in" title={opponentName}>
-                              vs {opponentName}
-                            </span>
-                            <span className="text-[10px] text-foreground/35 uppercase shrink-0">{opponentCode}</span>
-                          </div>
-                          <span className="font-extrabold text-foreground select-none shrink-0 tabular-nums">
-                            {scoreHome} - {scoreAway}
+                          {/* Outcome badge */}
+                          <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black border shrink-0 select-none ${
+                            outcome === 'W'
+                              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                              : outcome === 'L'
+                              ? 'bg-red-500/20 text-red-400 border-red-500/30'
+                              : 'bg-white/10 text-foreground/50 border-white/10'
+                          }`}>
+                            {outcome === 'W' ? 'T' : outcome === 'L' ? 'B' : 'H'}
                           </span>
+
+                          {/* Symmetrical match score layout */}
+                          <div className="flex-1 grid grid-cols-[1fr_auto_1fr] items-center gap-1.5 min-w-0">
+                            {/* Home team */}
+                            <span 
+                              className={`truncate text-right ${isHome ? 'font-bold text-blue-400' : 'text-foreground/75'}`}
+                              title={homeTeamName}
+                            >
+                              {homeTeamName}
+                            </span>
+
+                            {/* Score */}
+                            <span className="font-extrabold text-foreground bg-white/5 px-1.5 py-0.5 rounded select-none shrink-0 tabular-nums text-center min-w-[36px]">
+                              {scoreHome} - {scoreAway}
+                            </span>
+
+                            {/* Away team */}
+                            <span 
+                              className={`truncate text-left ${!isHome ? 'font-bold text-blue-400' : 'text-foreground/75'}`}
+                              title={awayTeamName}
+                            >
+                              {awayTeamName}
+                            </span>
+                          </div>
                         </div>
                       );
                     })}
