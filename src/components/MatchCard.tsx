@@ -14,7 +14,7 @@ interface MatchCardProps {
   isLiveWidget?: boolean;
   homeTeamStanding?: string;
   awayTeamStanding?: string;
-  onFlagClick?: (team: Team) => void;
+  onFlagClick?: (team: Team, clickCoords: { x: number; y: number }) => void;
 }
 
 export default function MatchCard({ match, isLiveWidget = false, homeTeamStanding, awayTeamStanding, onFlagClick }: MatchCardProps) {
@@ -203,7 +203,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
         {/* Đội nhà */}
         <div className="flex-1 flex flex-col items-center text-center">
           <div 
-            onClick={() => home_team && onFlagClick?.(home_team)}
+            onClick={(e) => home_team && onFlagClick?.(home_team, { x: e.clientX, y: e.clientY })}
             className="relative mb-2 cursor-pointer hover:scale-105 active:scale-95 transition-transform duration-200 select-none group/flag"
             title={`Xem thống kê nhanh của ${homeName}`}
           >
@@ -326,7 +326,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
         {/* Đội khách */}
         <div className="flex-1 flex flex-col items-center text-center">
           <div 
-            onClick={() => away_team && onFlagClick?.(away_team)}
+            onClick={(e) => away_team && onFlagClick?.(away_team, { x: e.clientX, y: e.clientY })}
             className="relative mb-2 cursor-pointer hover:scale-105 active:scale-95 transition-transform duration-200 select-none group/flag"
             title={`Xem thống kê nhanh của ${awayName}`}
           >

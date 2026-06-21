@@ -13,28 +13,64 @@ interface TeamStatsModalProps {
     team: Team;
     stats: StandingRow | null;
     history: Match[];
+    clickCoords?: { x: number; y: number };
   } | null;
   onClose: () => void;
 }
 
 export default function TeamStatsModal({ activeTeamStats, onClose }: TeamStatsModalProps) {
   const [mounted, setMounted] = useState(false);
+  const [isAnimatingIn, setIsAnimatingIn] = useState(false);
+  const [isClosing, setIsClosing] = useState(false);
 
   useEffect(() => {
     setMounted(true);
     return () => setMounted(false);
   }, []);
 
+  useEffect(() => {
+    if (activeTeamStats) {
+      setIsClosing(false);
+      const raf = requestAnimationFrame(() => {
+        setIsAnimatingIn(true);
+      });
+      return () => cancelAnimationFrame(raf);
+    } else {
+      setIsAnimatingIn(false);
+    }
+  }, [activeTeamStats]);
+
   if (!mounted || !activeTeamStats) return null;
+
+  const handleClose = () => {
+    setIsClosing(true);
+    setIsAnimatingIn(false);
+    setTimeout(() => {
+      onClose();
+    }, 300);
+  };
   
   const groupName = activeTeamStats.team.group_name;
   const groupRows = groupName ? globalTournamentStore.getStandings()[groupName] : undefined;
   const teamRank = groupRows ? groupRows.findIndex(r => r.team.id === activeTeamStats.team.id) + 1 : null;
 
+  const coords = activeTeamStats.clickCoords;
+  const originStyle = coords 
+    ? { transformOrigin: `${coords.x}px ${coords.y}px` } 
+    : { transformOrigin: 'center' };
+
+  const transitionStyle = {
+    ...originStyle,
+    transition: 'transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 200ms ease-out',
+    transform: isAnimatingIn && !isClosing ? 'scale(1)' : 'scale(0.05)',
+    opacity: isAnimatingIn && !isClosing ? 1 : 0,
+  };
+
   return createPortal(
     <div 
-      className="fixed inset-0 z-50 flex items-center justify-center bg-transparent p-4 animate-fade-in"
-      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-transparent p-4"
+      onClick={handleClose}
+      style={transitionStyle}
     >
       <div 
         className="w-full max-w-sm rounded-2xl liquid-glass p-6 shadow-2xl relative text-left overflow-hidden bg-card-bg border border-card-border"
@@ -46,7 +82,7 @@ export default function TeamStatsModal({ activeTeamStats, onClose }: TeamStatsMo
 
         {/* Close Button */}
         <button 
-          onClick={onClose}
+          onClick={handleClose}
           className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-foreground/5 text-foreground/50 hover:text-foreground transition-colors cursor-pointer border-0 bg-transparent"
         >
           <X size={16} weight="bold" />

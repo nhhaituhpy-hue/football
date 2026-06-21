@@ -23,9 +23,10 @@ export default function BracketPage() {
     team: Team;
     stats: StandingRow | null;
     history: Match[];
+    clickCoords?: { x: number; y: number };
   } | null>(null);
 
-  const handleFlagClick = (team: Team) => {
+  const handleFlagClick = (team: Team, clickCoords: { x: number; y: number }) => {
     const allMatchesList = globalTournamentStore.getMatches();
     const allStandings = globalTournamentStore.getStandings();
 
@@ -49,7 +50,8 @@ export default function BracketPage() {
     setActiveTeamStats({
       team,
       stats: teamStandingRow,
-      history
+      history,
+      clickCoords
     });
   };
   

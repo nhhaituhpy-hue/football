@@ -61,9 +61,10 @@ export default function DashboardPage() {
     team: Team;
     stats: StandingRow | null;
     history: Match[];
+    clickCoords?: { x: number; y: number };
   } | null>(null);
 
-  const handleFlagClick = (team: Team) => {
+  const handleFlagClick = (team: Team, clickCoords: { x: number; y: number }) => {
     const allMatches = globalTournamentStore.getMatches();
     const allStandings = globalTournamentStore.getStandings();
 
@@ -87,7 +88,8 @@ export default function DashboardPage() {
     setActiveTeamStats({
       team,
       stats: teamStandingRow,
-      history
+      history,
+      clickCoords
     });
   };
 
