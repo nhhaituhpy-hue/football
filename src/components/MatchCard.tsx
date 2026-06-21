@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { Match, MatchEvent, MatchOdds } from '../types';
+import { Match, MatchEvent, MatchOdds, OddItem, OddMarket } from '../types';
 import { fetchEventsFromDb } from '../data/supabase/events.repository';
 import { fetchOddsFromDb } from '../data/supabase/odds.repository';
 import { IS_SUPABASE_CONFIGURED } from '../data/supabase/config';
@@ -43,29 +43,13 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
     return hk >= 0 ? hk.toFixed(2) : '-';
   };
 
-  const findMainOdd = (oddsList: any[]) => {
-    if (!Array.isArray(oddsList) || oddsList.length === 0) return null;
-    let mainOdd = oddsList[0];
-    let minDiff = Infinity;
-    for (const o of oddsList) {
-      const overVal = parseFloat(o.over || o.home || 2);
-      const underVal = parseFloat(o.under || o.away || 2);
-      const diff = Math.abs(overVal - 2) + Math.abs(underVal - 2);
-      if (diff < minDiff) {
-        minDiff = diff;
-        mainOdd = o;
-      }
-    }
-    return mainOdd;
-  };
-
-  const findTopOdds = (oddsList: any[], count = 2) => {
+  const findTopOdds = (oddsList: OddItem[], count = 2) => {
     if (!Array.isArray(oddsList) || oddsList.length === 0) return [];
 
     // Sao chép và tính độ lệch của từng dòng kèo so với 2.00
     const scoredOdds = oddsList.map(o => {
-      const overVal = parseFloat(o.over || o.home || 2);
-      const underVal = parseFloat(o.under || o.away || 2);
+      const overVal = parseFloat((o.over || o.home || 2).toString());
+      const underVal = parseFloat((o.under || o.away || 2).toString());
       const diff = Math.abs(overVal - 2) + Math.abs(underVal - 2);
       return { o, diff };
     });
@@ -77,7 +61,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
     const top = scoredOdds.slice(0, count).map(x => x.o);
 
     // Sắp xếp theo handicap tăng dần để hiển thị đẹp mắt
-    top.sort((a, b) => (parseFloat(a.hdp) || 0) - (parseFloat(b.hdp) || 0));
+    top.sort((a, b) => (parseFloat(a.hdp.toString()) || 0) - (parseFloat(b.hdp.toString()) || 0));
     return top;
   };
 
@@ -122,7 +106,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
     void loadOdds();
 
     // Polling mỗi 30 giây để cập nhật tỷ lệ kèo trực tiếp chỉ khi trận đang trực tiếp
-    let pollInterval: any;
+    let pollInterval: ReturnType<typeof setInterval> | undefined;
     if (isLive) {
       pollInterval = setInterval(() => {
         void loadOdds();
@@ -417,17 +401,17 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
             const oddsData = odds.odds_data || [];
 
             // Tìm và gộp tất cả các mốc kèo chấp (chính + phụ)
-            const spreadMarkets = oddsData.filter((m: any) =>
+            const spreadMarkets = oddsData.filter((m: OddMarket) =>
               m.name === 'Spread' || m.name === 'Asian Handicap' || m.name === 'Alternative Asian Handicap'
             );
-            const allSpreads = spreadMarkets.flatMap((m: any) => m.odds || []);
+            const allSpreads = spreadMarkets.flatMap((m: OddMarket) => m.odds || []);
             const topSpreads = findTopOdds(allSpreads, 2);
 
             // Tìm và gộp tất cả các mốc kèo tài xỉu (chính + phụ)
-            const totalsMarkets = oddsData.filter((m: any) =>
+            const totalsMarkets = oddsData.filter((m: OddMarket) =>
               m.name === 'Totals' || m.name === 'Goals Over/Under' || m.name === 'Total Over/Under' || m.name === 'Alternative Goal Line'
             );
-            const allTotals = totalsMarkets.flatMap((m: any) => m.odds || []);
+            const allTotals = totalsMarkets.flatMap((m: OddMarket) => m.odds || []);
             const topTotals = findTopOdds(allTotals, 2);
 
             if (topSpreads.length === 0 && topTotals.length === 0) {
@@ -444,15 +428,19 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
                 {topSpreads.length > 0 ? (
                   <div className="rounded-lg bg-white/[0.03] border border-white/5 px-2 py-1.5 flex flex-col justify-center min-w-0 space-y-1">
                     <span className="text-[8px] text-foreground/40 font-semibold mb-0.5 uppercase tracking-wider block text-center">Kèo Chấp</span>
-                    {topSpreads.map((spread: any, idx: number) => (
-                      <div key={idx} className="flex items-center justify-center gap-1 font-bold">
-                        <span className="text-foreground/75 truncate">{spread.hdp < 0 ? `-${Math.abs(spread.hdp)}` : `+${spread.hdp}`}</span>
-                        <span className="text-accent-win shrink-0">{toHongKongOdds(spread.over || spread.home)}</span>
-                        <span className="text-foreground/20 font-light mx-0.5">|</span>
-                        <span className="text-foreground/75 truncate">{spread.hdp < 0 ? `+${Math.abs(spread.hdp)}` : `-${spread.hdp}`}</span>
-                        <span className="text-accent-win shrink-0">{toHongKongOdds(spread.under || spread.away)}</span>
-                      </div>
-                    ))}
+                    {topSpreads.map((spread: OddItem, idx: number) => {
+                      const hdpVal = parseFloat(spread.hdp.toString());
+                      const absHdp = Math.abs(hdpVal);
+                      return (
+                        <div key={idx} className="flex items-center justify-center gap-1 font-bold">
+                          <span className="text-foreground/75 truncate">{hdpVal < 0 ? `-${absHdp}` : `+${spread.hdp}`}</span>
+                          <span className="text-accent-win shrink-0">{toHongKongOdds(spread.over || spread.home)}</span>
+                          <span className="text-foreground/20 font-light mx-0.5">|</span>
+                          <span className="text-foreground/75 truncate">{hdpVal < 0 ? `+${absHdp}` : `-${spread.hdp}`}</span>
+                          <span className="text-accent-win shrink-0">{toHongKongOdds(spread.under || spread.away)}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="rounded-lg bg-white/[0.01] border border-dashed border-white/5 p-1.5 flex items-center justify-center text-foreground/35 italic">
@@ -464,7 +452,7 @@ export default function MatchCard({ match, isLiveWidget = false, homeTeamStandin
                 {topTotals.length > 0 ? (
                   <div className="rounded-lg bg-white/[0.03] border border-white/5 px-2 py-1.5 flex flex-col justify-center min-w-0 space-y-1">
                     <span className="text-[8px] text-foreground/40 font-semibold mb-0.5 uppercase tracking-wider block text-center">Tài Xỉu</span>
-                    {topTotals.map((total: any, idx: number) => (
+                    {topTotals.map((total: OddItem, idx: number) => (
                       <div key={idx} className="flex items-center justify-center gap-1 font-bold">
                         <span className="text-foreground/50 shrink-0">Tài {total.hdp}</span>
                         <span className="text-accent-win shrink-0">{toHongKongOdds(total.over)}</span>

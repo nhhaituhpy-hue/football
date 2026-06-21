@@ -3,7 +3,7 @@
 import React from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { Match, MatchPrediction, MatchOdds } from '../../../types';
+import { Match, MatchPrediction, MatchOdds, OddItem, OddMarket } from '../../../types';
 import { useMatchAnalysis } from '../../../data/hooks/use-match-analysis';
 import { 
   Calendar, 
@@ -39,13 +39,13 @@ export default function AnalysisClient({ match: initialMatch, prediction: initia
     return hk >= 0 ? hk.toFixed(2) : '-';
   };
 
-  const findMainOdd = (oddsList: any[]) => {
+  const findMainOdd = (oddsList: OddItem[]) => {
     if (!Array.isArray(oddsList) || oddsList.length === 0) return null;
     let mainOdd = oddsList[0];
     let minDiff = Infinity;
     for (const o of oddsList) {
-      const overVal = parseFloat(o.over || o.home || 2);
-      const underVal = parseFloat(o.under || o.away || 2);
+      const overVal = parseFloat((o.over || o.home || 2).toString());
+      const underVal = parseFloat((o.under || o.away || 2).toString());
       const diff = Math.abs(overVal - 2) + Math.abs(underVal - 2);
       if (diff < minDiff) {
         minDiff = diff;
@@ -56,16 +56,16 @@ export default function AnalysisClient({ match: initialMatch, prediction: initia
   };
 
   const oddsData = odds?.odds_data || [];
-  const spreadMarkets = oddsData.filter((m: any) =>
+  const spreadMarkets = oddsData.filter((m: OddMarket) =>
     m.name === 'Spread' || m.name === 'Asian Handicap' || m.name === 'Alternative Asian Handicap'
   );
-  const allSpreads = spreadMarkets.flatMap((m: any) => m.odds || []);
+  const allSpreads = spreadMarkets.flatMap((m: OddMarket) => m.odds || []);
   const mainSpread = findMainOdd(allSpreads);
 
-  const totalsMarkets = oddsData.filter((m: any) =>
+  const totalsMarkets = oddsData.filter((m: OddMarket) =>
     m.name === 'Totals' || m.name === 'Goals Over/Under' || m.name === 'Total Over/Under' || m.name === 'Alternative Goal Line'
   );
-  const allTotals = totalsMarkets.flatMap((m: any) => m.odds || []);
+  const allTotals = totalsMarkets.flatMap((m: OddMarket) => m.odds || []);
   const mainTotals = findMainOdd(allTotals);
 
 
@@ -299,29 +299,36 @@ export default function AnalysisClient({ match: initialMatch, prediction: initia
                 <h4 className="text-xs font-extrabold uppercase text-foreground/75 tracking-wider">
                   Kèo Chấp Châu Á (Spread)
                 </h4>
-                {mainSpread && (
-                  <span className="px-2 py-0.5 rounded bg-accent-win/10 border border-accent-win/20 text-[9px] font-bold text-accent-win">
-                    {mainSpread.hdp === 0 ? 'Đồng banh (0)' : `${mainSpread.hdp < 0 ? `Chấp -${Math.abs(mainSpread.hdp)}` : `Được chấp +${mainSpread.hdp}`}`}
-                  </span>
-                )}
+                {mainSpread && (() => {
+                  const hdpVal = parseFloat(mainSpread.hdp.toString());
+                  return (
+                    <span className="px-2 py-0.5 rounded bg-accent-win/10 border border-accent-win/20 text-[9px] font-bold text-accent-win">
+                      {hdpVal === 0 ? 'Đồng banh (0)' : `${hdpVal < 0 ? `Chấp -${Math.abs(hdpVal)}` : `Được chấp +${mainSpread.hdp}`}`}
+                    </span>
+                  );
+                })()}
               </div>
               
-              {mainSpread ? (
-                <div className="grid grid-cols-2 gap-4 text-center">
-                  {/* Home Odds */}
-                  <div className="flex flex-col gap-1 p-3 rounded-lg bg-card-bg/25 border border-card-border/60 hover:border-accent-win/35 transition-all">
-                    <span className="text-[9px] font-bold text-foreground/50 uppercase truncate">{homeName}</span>
-                    <span className="text-[10px] text-foreground/40 font-semibold">{mainSpread.hdp < 0 ? `-${Math.abs(mainSpread.hdp)}` : `+${mainSpread.hdp}`}</span>
-                    <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainSpread.over || mainSpread.home)}</span>
+              {mainSpread ? (() => {
+                const hdpVal = parseFloat(mainSpread.hdp.toString());
+                const absHdp = Math.abs(hdpVal);
+                return (
+                  <div className="grid grid-cols-2 gap-4 text-center">
+                    {/* Home Odds */}
+                    <div className="flex flex-col gap-1 p-3 rounded-lg bg-card-bg/25 border border-card-border/60 hover:border-accent-win/35 transition-all">
+                      <span className="text-[9px] font-bold text-foreground/50 uppercase truncate">{homeName}</span>
+                      <span className="text-[10px] text-foreground/40 font-semibold">{hdpVal < 0 ? `-${absHdp}` : `+${mainSpread.hdp}`}</span>
+                      <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainSpread.over || mainSpread.home)}</span>
+                    </div>
+                    {/* Away Odds */}
+                    <div className="flex flex-col gap-1 p-3 rounded-lg bg-card-bg/25 border border-card-border/60 hover:border-accent-win/35 transition-all">
+                      <span className="text-[9px] font-bold text-foreground/50 uppercase truncate">{awayName}</span>
+                      <span className="text-[10px] text-foreground/40 font-semibold">{hdpVal < 0 ? `+${absHdp}` : `-${mainSpread.hdp}`}</span>
+                      <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainSpread.under || mainSpread.away)}</span>
+                    </div>
                   </div>
-                  {/* Away Odds */}
-                  <div className="flex flex-col gap-1 p-3 rounded-lg bg-card-bg/25 border border-card-border/60 hover:border-accent-win/35 transition-all">
-                    <span className="text-[9px] font-bold text-foreground/50 uppercase truncate">{awayName}</span>
-                    <span className="text-[10px] text-foreground/40 font-semibold">{mainSpread.hdp < 0 ? `+${Math.abs(mainSpread.hdp)}` : `-${mainSpread.hdp}`}</span>
-                    <span className="text-lg font-black text-accent-win mt-1">{toHongKongOdds(mainSpread.under || mainSpread.away)}</span>
-                  </div>
-                </div>
-              ) : (
+                );
+              })() : (
                 <p className="text-xs text-foreground/45 italic py-4 text-center">Chưa có kèo chấp chính cho trận đấu này.</p>
               )}
             </div>

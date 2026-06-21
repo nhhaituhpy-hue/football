@@ -1,7 +1,7 @@
 import { getSupabaseRows, upsertSupabaseRows } from '../repositories/supabase';
 import { teamMatches } from '../domain/match-normalizer';
 
-export async function syncOddsFromHttp(env: any): Promise<void> {
+export async function syncOddsFromHttp(env: any, forceAll = false): Promise<void> {
   const apiKey = env.ODDS_API_KEY || '37eb8dbab6646bbf1f5c07f35e257f27a7dc694d9627b8bd761407f8a0575725';
   const baseUrl = 'https://api.odds-api.io/v3';
 
@@ -66,8 +66,20 @@ export async function syncOddsFromHttp(env: any): Promise<void> {
   console.log(`HTTP Odds Sync: Found ${events.length} events from Odds-API.`);
 
   // Filter out settled events, we only care about pending/live events
-  const activeEvents = events.filter((e: any) => e.status === 'pending' || e.status === 'live');
-  console.log(`HTTP Odds Sync: ${activeEvents.length} active/pending events to sync.`);
+  let activeEvents = events.filter((e: any) => e.status === 'pending' || e.status === 'live');
+
+  // BUDGET OPTIMIZATION: If not forceAll, only sync odds for live matches or matches starting in the next 24 hours
+  if (!forceAll) {
+    const nowMs = Date.now();
+    activeEvents = activeEvents.filter((e: any) => {
+      if (e.status === 'live') return true;
+      const kickoffMs = new Date(e.date).getTime();
+      return kickoffMs - nowMs < 24 * 60 * 60 * 1000;
+    });
+    console.log(`HTTP Odds Sync: Budget optimization enabled. Syncing ${activeEvents.length} events (live or starting in <24h).`);
+  } else {
+    console.log(`HTTP Odds Sync: Full sync requested. Syncing all ${activeEvents.length} active events.`);
+  }
 
   if (activeEvents.length === 0) {
     return;

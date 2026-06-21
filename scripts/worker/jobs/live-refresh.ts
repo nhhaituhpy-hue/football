@@ -163,17 +163,18 @@ export async function refreshLiveCacheAndSync(
     const eventsUrl = `https://api.odds-api.io/v3/events?sport=football&league=international-fifa-world-cup&apiKey=${apiKey}&limit=100`;
 
     const eventsRes = await fetch(eventsUrl).catch(err => {
-      console.warn('Failed to fetch live events from Odds-API:', err.message);
-      return null;
+      throw new Error(`Failed to fetch live events from Odds-API due to network error: ${err.message}`);
     });
 
-    let rawEvents: any[] = [];
-    if (eventsRes && eventsRes.ok) {
-      const parsed = await eventsRes.json().catch(() => null);
-      if (Array.isArray(parsed)) {
-        rawEvents = parsed;
-      }
+    if (!eventsRes.ok) {
+      throw new Error(`Failed to fetch live events from Odds-API: HTTP ${eventsRes.status}`);
     }
+
+    const parsed = await eventsRes.json().catch(() => null);
+    if (!Array.isArray(parsed)) {
+      throw new Error('Failed to fetch live events from Odds-API: invalid JSON array response');
+    }
+    const rawEvents = parsed;
 
     const dataPromises = rawEvents.map(async (event) => {
       // Find database match using mapped team names

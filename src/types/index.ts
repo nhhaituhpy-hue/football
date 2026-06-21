@@ -127,10 +127,23 @@ export interface MatchPrediction {
   updated_at?: string;
 }
 
+export interface OddItem {
+  hdp: number | string;
+  over?: number | string;
+  under?: number | string;
+  home?: number | string;
+  away?: number | string;
+}
+
+export interface OddMarket {
+  name: string;
+  odds: OddItem[];
+}
+
 export interface MatchOdds {
   match_id: number;
   bookmaker: string;
-  odds_data: any[];
+  odds_data: OddMarket[];
   created_at?: string;
   updated_at?: string;
 }

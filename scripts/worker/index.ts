@@ -12,8 +12,9 @@ const worker = {
       ctx.waitUntil(syncPredictionsToday(env));
     } else if (event.cron === "0 */6 * * *") {
       ctx.waitUntil(syncWc2026Schedule(env));
+      ctx.waitUntil(syncOddsFromHttp(env, true)); // Full sync every 6 hours
     } else {
-      ctx.waitUntil(syncOddsFromHttp(env));
+      ctx.waitUntil(syncOddsFromHttp(env, false)); // Express sync (live + <24h)
       const id = env.LIVE_CACHE_DO.idFromName("global_live_cache");
       const obj = env.LIVE_CACHE_DO.get(id);
       ctx.waitUntil(obj.fetch("http://do/start-alarm"));

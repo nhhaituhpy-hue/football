@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 /**
  * Scripts: sync_odds_websocket.js
  * Description: Daemon script that connects to Odds-API.io WebSocket,
