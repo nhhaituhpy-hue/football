@@ -73,7 +73,7 @@ export default function TeamStatsModal({ activeTeamStats, onClose }: TeamStatsMo
       style={transitionStyle}
     >
       <div 
-        className="w-full max-w-sm rounded-2xl liquid-glass p-6 shadow-2xl relative text-left overflow-hidden bg-card-bg border border-card-border"
+        className="w-full max-w-sm rounded-2xl liquid-glass p-6 shadow-2xl relative text-left overflow-hidden bg-[rgba(255,255,255,0.92)] dark:bg-[rgba(15,15,22,0.90)] border border-card-border"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Background decorative glows */}
